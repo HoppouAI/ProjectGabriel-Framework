@@ -1,8 +1,8 @@
 # Project Gabriel Framework
 
-The Code is based on the Project Gabriel Framework by [Hoppou.AI](https://hoppou.ai/) Which we use for our AI in VRChat named Gabriel, The indian guy in the blue polo shirt. 
+The Code is based on the Project Gabriel Framework by [Hoppou.AI](https://hoppou.ai/) which we use for our AI in VRChat named Gabriel — the Indian guy in the blue polo shirt.
 
-![Gabriel Picture](Other Stuff/Gabriel_Picture.png)
+![Gabriel Picture](https://github.com/HoppouAI/ProjectGabriel-Framework/blob/main/Other%20Stuff/Gabriel_Picture.png?raw=true)
 
 ## Quick summary
 
