@@ -50,8 +50,8 @@ live_connect:
   media_resolution: "MEDIA_RESOLUTION_LOW" # Or "MEDIA_RESOLUTION_HIGH"
   
   # Speech configuration
-  speech:
-    language_code: "ta-IN" # https://ai.google.dev/gemini-api/docs/live-guide#supported-languages
+  speech: # The language code also defines the Accent of the voice
+    language_code: "en-US" # https://ai.google.dev/gemini-api/docs/live-guide#supported-languages
     voice:
       name: "Puck" # https://ai.google.dev/gemini-api/docs/speech-generation#voices
   
