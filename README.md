@@ -35,7 +35,7 @@ The WebUI is located under `api/webui/` Default ports are configured in `config.
 
 ## Configuration — `config.yml`
 
-The project is configured via the YAML file `config.yml` in the repository root. Below are the most-common configuration sections and recommended placeholders. Keep secrets (API keys, passwords) out of the repo — prefer environment variables where supported.
+The project is configured via the YAML file `config.yml` in the repository root. Below are the most-common configuration sections and recommended placeholders. Keep secrets (API keys, passwords) secure
 
 Top-level sections you will commonly edit:
 
