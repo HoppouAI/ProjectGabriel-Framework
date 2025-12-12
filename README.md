@@ -28,7 +28,7 @@ If you need CUDA wheels for PyTorch, follow the commented suggestion in `require
 - Start the main app (default behavior wired in `main.py`):
 
 ```bash
-python main.py
+python supervisor.py
 ```
 
 The WebUI is located under `api/webui/` Default ports are configured in `config.yml`.
