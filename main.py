@@ -294,7 +294,7 @@ def setup_globals(config, prompts=None):
 
     # Add memory system tools if enabled (default: True)
     if tools_config.get('memory_system', True):
-        memory_system_tools = memory_tools.get_all_tools()
+        memory_system_tools = memory_tools.get_all_tools(config)
         for tool in memory_system_tools:
             tools.append(types.Tool(function_declarations=tool['function_declarations']))
 
@@ -319,23 +319,53 @@ def setup_globals(config, prompts=None):
             handle=None
         )
 
-    CONFIG = types.LiveConnectConfig(
-        response_modalities=live_config.get('response_modalities', ["AUDIO"]),
-        media_resolution=live_config.get('media_resolution', "MEDIA_RESOLUTION_MEDIUM"),
-        speech_config=types.SpeechConfig(
+    # Check if using native audio model (doesn't support language_code)
+    is_native_audio_model = MODEL == "models/gemini-2.5-flash-native-audio-preview-09-2025"
+    
+    # Build SpeechConfig based on model type
+    if is_native_audio_model:
+        # Native audio model doesn't support language_code parameter
+        speech_cfg = types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name=voice_config.get('name', 'Puck')
+                )
+            )
+        )
+    else:
+        # Standard models support language_code
+        speech_cfg = types.SpeechConfig(
             language_code=speech_config.get('language_code', 'ta-IN'),
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
                     voice_name=voice_config.get('name', 'Puck')
                 )
             )
-        ),
-        context_window_compression=types.ContextWindowCompressionConfig(
+        )
+    
+    # Configure context window based on model capabilities
+    if is_native_audio_model:
+        # Native audio model supports up to 128k context window
+        context_compression = types.ContextWindowCompressionConfig(
+            trigger_tokens=context_window_config.get('trigger_tokens_native', 102400),
+            sliding_window=types.SlidingWindow(
+                target_tokens=context_window_config.get('sliding_window_target_tokens_native', 51200)
+            ),
+        )
+    else:
+        # Standard models use default context window settings
+        context_compression = types.ContextWindowCompressionConfig(
             trigger_tokens=context_window_config.get('trigger_tokens', 25600),
             sliding_window=types.SlidingWindow(
                 target_tokens=context_window_config.get('sliding_window_target_tokens', 12800)
             ),
-        ),
+        )
+    
+    CONFIG = types.LiveConnectConfig(
+        response_modalities=live_config.get('response_modalities', ["AUDIO"]),
+        media_resolution=live_config.get('media_resolution', "MEDIA_RESOLUTION_MEDIUM"),
+        speech_config=speech_cfg,
+        context_window_compression=context_compression,
         session_resumption=session_resumption,
         tools=tools,
         system_instruction=types.Content(
@@ -677,7 +707,8 @@ class SessionManager:
                 'websocket', 'network', 'broken pipe', 'reset by peer',
                 'deadline expired', 'connectionclosederror', 'internal error',
                 'websocket closed', 'connection closed', '1011 (internal error)',
-                '1011', 'service is currently unavailable', 'server error', 'cancelled'
+                '1011', '1007', 'invalid argument', 'invalid frame payload',
+                'service is currently unavailable', 'server error', 'cancelled'
             ]):
                 logger.info(f"Reconnectable error detected: {error}")
                 return True
@@ -892,7 +923,53 @@ class AudioLoop:
     async def send_realtime(self):
         while True:
             msg = await self.out_queue.get()
-            await self.session.send(input=msg)
+            
+            if msg is None:
+                continue
+            try:
+                if isinstance(msg, dict):
+                    mime = msg.get('mime_type')
+                    data = msg.get('data')
+
+                    if data is None and 'text' not in msg:
+                        logger.warning(f"Invalid message format in send_realtime, skipping: {msg}")
+                        continue
+
+                    if 'text' in msg and (not mime and data is None):
+                        await self.session.send_realtime_input(text=msg['text'])
+                        continue
+
+                    # If data is a base64-encoded string, decode it; otherwise keep bytes
+                    raw = data
+                    if isinstance(data, str):
+                        try:
+                            raw = base64.b64decode(data)
+                        except Exception:
+                            raw = data.encode('utf-8')
+
+                    if mime and isinstance(mime, str) and mime.startswith('audio/'):
+                        blob = types.Blob(data=bytes(raw) if raw is not None else None, mime_type=mime)
+                        await self.session.send_realtime_input(audio=blob)
+                    elif mime and isinstance(mime, str) and (mime.startswith('image/') or mime.startswith('video/')):
+                        blob = types.Blob(data=bytes(raw) if raw is not None else None, mime_type=mime)
+                        await self.session.send_realtime_input(media=blob)
+                    else:
+                        if isinstance(raw, (bytes, bytearray)):
+                            blob = types.Blob(data=bytes(raw), mime_type=mime or 'application/octet-stream')
+                            await self.session.send_realtime_input(media=blob)
+                        else:
+                            await self.session.send_realtime_input(text=str(raw))
+                else:
+                    if isinstance(msg, (bytes, bytearray)):
+                        blob = types.Blob(data=bytes(msg), mime_type='audio/pcm')
+                        await self.session.send_realtime_input(audio=blob)
+                    elif isinstance(msg, str):
+                        await self.session.send_realtime_input(text=msg)
+                    else:
+                        await self.session.send_realtime_input(text=str(msg))
+            except Exception as send_err:
+                logger.warning(f"send_realtime encountered error when sending message: {send_err}")
+                continue
 
     async def listen_audio(self):
         mic_info = pya.get_default_input_device_info()
@@ -1138,20 +1215,13 @@ class AudioLoop:
                 osc.notify_ai_speech_end()
             except Exception as osc_notify_error:
                 logger.warning(f"OSC speech end notification error: {osc_notify_error}")
-                
-            # Mark AI speaking end for YAP gating
+            
             try:
                 if hasattr(memory_tools, 'set_ai_speaking'):
                     memory_tools.set_ai_speaking(False)
-                    try:
-                        if hasattr(memory_tools, 'notify_ai_turn_complete'):
-                            memory_tools.notify_ai_turn_complete()
-                    except Exception as notify_err:
-                        logger.warning(f"YAP turn notification error: {notify_err}")
             except Exception as yap_error:
                 logger.warning(f"YAP state update error: {yap_error}")
             
-            # Check if V2 mode switch was requested
             try:
                 if hasattr(self, 'switch_to_v2_requested') and self.switch_to_v2_requested:
                     logger.info("V2 mode switch detected, raising signal")
