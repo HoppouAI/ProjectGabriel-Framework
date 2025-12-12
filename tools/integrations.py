@@ -5,10 +5,10 @@ Provides access to MyInstants, SFX, Personalities, and Movement modules.
 
 import logging
 
-
+# Set up logging
 logger = logging.getLogger(__name__)
 
-
+# Import MyInstants functionality
 try:
     from myinstants import (
         get_all_myinstants_tools, 
@@ -23,7 +23,7 @@ except ImportError as e:
     handle_myinstants_function_calls = None
     logger.warning(f"MyInstants module not available: {e}")
 
-
+# Import SFX functionality
 try:
     from sfx import (
         get_all_sfx_tools,
@@ -38,7 +38,7 @@ except ImportError as e:
     handle_sfx_function_calls = None
     logger.warning(f"SFX module not available: {e}")
 
-
+# Import Personalities functionality
 try:
     from personalities import (
         get_personality_tools,
@@ -53,7 +53,7 @@ except ImportError as e:
     handle_personality_function_calls = None
     logger.warning(f"Personalities module not available: {e}")
 
-
+# Import Movement functionality (OSC input without vision)
 try:
     from movement import (
         get_movement_tools,
@@ -68,7 +68,7 @@ except Exception as e:
     handle_movement_function_calls = None
     logger.warning(f"Movement module not available: {e}")
 
-
+# Import VRChat functionality (friend requests)
 try:
     from .vrchat_tools import (
         VRCHAT_FUNCTION_DECLARATIONS,
@@ -82,7 +82,7 @@ except Exception as e:
     handle_vrchat_function_calls = None
     logger.warning(f"VRChat tools not available: {e}")
 
-
+# Import Fishing functionality
 try:
     from .fishing import (
         FISHING_FUNCTION_DECLARATIONS,
@@ -96,7 +96,7 @@ except Exception as e:
     handle_fishing_function_calls = None
     logger.warning(f"Fishing tools not available: {e}")
 
-
+# Re-export availability flags and handlers for easy access
 __all__ = [
     'MYINSTANTS_AVAILABLE',
     'SFX_AVAILABLE', 

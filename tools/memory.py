@@ -1,5 +1,10 @@
 """
-Memory System
+Memory System for Gabriel
+Provides a simple but effective memory system using MongoDB.
+Supports three memory types:
+- Long-term: Permanent memories
+- Short-term: Auto-deleted after 7 days
+- Quick notes: Auto-deleted after 6 hours
 """
 
 import logging
@@ -15,14 +20,14 @@ from pymongo import ASCENDING, DESCENDING, MongoClient
 from pymongo.collection import Collection, ReturnDocument
 from pymongo.errors import PyMongoError
 try:
-    import yaml  
+    import yaml  # type: ignore
 except Exception:
-    yaml = None  
+    yaml = None  # type: ignore
 
-
+# Set up logging
 logger = logging.getLogger(__name__)
 
-
+# Memory type constants
 MEMORY_TYPE_LONG_TERM = "long_term"
 MEMORY_TYPE_SHORT_TERM = "short_term"
 MEMORY_TYPE_QUICK_NOTE = "quick_note"
@@ -538,7 +543,7 @@ class MemorySystem:
             return value
         return None
 
-
+# Function declarations for Gemini Live API
 MEMORY_FUNCTION_DECLARATIONS = [
     {
         "name": "save_memory",
@@ -734,16 +739,16 @@ async def handle_memory_function_call(function_call) -> types.FunctionResponse:
             content = args["content"]
             category = args.get("category", "general")
 
-            
+            # Determine memory type with note_* convention
             provided_type = args.get("memory_type")
             if key.startswith("note_") and not provided_type:
-                
+                # Use configured default for notes (quick_note by default in config.yml)
                 note_cfg = _get_note_config()
                 mem_type = str(note_cfg.get("default_type", MEMORY_TYPE_QUICK_NOTE))
             else:
                 mem_type = provided_type or MEMORY_TYPE_LONG_TERM
 
-            
+            # Rate limit and de-duplicate note saves even if called directly
             if key.startswith("note_"):
                 cfg = _get_note_config()
                 if not cfg.get("enabled", True):
@@ -886,7 +891,7 @@ def get_memory_tools():
     """Get the memory tools configuration for Gemini Live API."""
     return [{"function_declarations": MEMORY_FUNCTION_DECLARATIONS}]
 
-
+# --- Internal helpers and state ---
 _note_last_ts: float | None = None
 _note_last_hash: str | None = None
 
@@ -928,5 +933,5 @@ def _get_short_term_config() -> Dict[str, Any]:
     return defaults
 
 
-
+# Global memory system instance
 memory_system = MemorySystem()

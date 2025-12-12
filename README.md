@@ -8,7 +8,7 @@ The Code is based on the Project Gabriel Framework by [Hoppou.AI](https://hoppou
 
 - Language: Python 3.10+ (codebase is Python-first)
 - Purpose: Live assistant / VRChat AI (audio I/O, VRChat OSC, memory, web UI)
-- Main entry points: `main.py`, `v2.py`, `api/webui_server.py` (see folder `api/webui/` for the static UI)
+- Main entry points: `main.py`, `supervisor.py`, `v2.py`, `api/webui_server.py` (see folder `api/webui/` for the static UI)
 - Important assets: `yolo11m.pt` (vision model — large binary, optional)
 
 ## Prerequisites
@@ -104,7 +104,7 @@ api:
 		port: 5555
 
 model:
-	name: "models/gemini-live-2.5-flash-preview"
+	name: "models/gemini-2.5-flash-native-audio-preview-09-2025"
 
 vrchat:
 	application:

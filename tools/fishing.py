@@ -16,7 +16,7 @@ def _ensure_injector():
     global _injector
     if _injector is None:
         try:
-            import pydirectinput as _pdi  
+            import pydirectinput as _pdi  # type: ignore
             _injector = _pdi
             try:
                 _pdi.PAUSE = 0.0

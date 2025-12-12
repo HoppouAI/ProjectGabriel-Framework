@@ -11,12 +11,12 @@ from datetime import datetime
 from typing import Dict, Any
 from google.genai import types
 from .memory import memory_system
-try:  
-    import yaml  
+try:  # Optional dependency, already in requirements
+    import yaml  # type: ignore
 except Exception:
-    yaml = None  
+    yaml = None  # type: ignore
 
-
+# Set up logging
 logger = logging.getLogger(__name__)
 
 _key_injector = None
@@ -36,7 +36,7 @@ def _ensure_key_injector():
             raise RuntimeError(f"PyDirectInput not available for keyboard inputs: {e}")
     return _key_injector
 
-
+# Additional utility function declarations that might be useful
 UTILITY_FUNCTION_DECLARATIONS = [
     {
         "name": "get_current_time",
@@ -123,7 +123,7 @@ async def handle_utility_function_call(function_call) -> types.FunctionResponse:
             }
         
         elif function_name == "take_note":
-            
+            # Config and rate limit controls
             cfg = _get_note_config()
 
             if not cfg.get("enabled", True):
@@ -133,7 +133,7 @@ async def handle_utility_function_call(function_call) -> types.FunctionResponse:
                     "skipped": True,
                 }
             else:
-                
+                # Rate limit: prevent too-frequent notes
                 now = time.time()
                 min_gap = float(cfg.get("min_interval_seconds", 120))
 
@@ -152,7 +152,7 @@ async def handle_utility_function_call(function_call) -> types.FunctionResponse:
                         "reason": "rate_limited"
                     }
                 else:
-                    
+                    # De-duplicate recent identical notes
                     dedupe_window = float(cfg.get("dedupe_window_seconds", 300))
                     if _last_note_hash == content_hash and now - _last_note_ts < dedupe_window:
                         result = {
@@ -162,11 +162,11 @@ async def handle_utility_function_call(function_call) -> types.FunctionResponse:
                             "reason": "duplicate"
                         }
                     else:
-                        
+                        # Generate a timestamped key for the note
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         key = f"note_{timestamp}"
 
-                        
+                        # Determine memory type: prefer arg, fall back to config, default quick_note
                         memory_type = args.get("memory_type") or str(cfg.get("default_type", "quick_note"))
 
                         result = memory_system.save_memory(
@@ -177,7 +177,7 @@ async def handle_utility_function_call(function_call) -> types.FunctionResponse:
                             tags=["quick_note"]
                         )
 
-                        
+                        # Update rate-limit trackers only if actually saved
                         if result.get("success"):
                             _last_note_ts = now
                             _last_note_hash = content_hash
@@ -186,8 +186,8 @@ async def handle_utility_function_call(function_call) -> types.FunctionResponse:
             reason = args.get("reason", "Better voice quality requested")
             logger.info(f"V2 mode switch requested: {reason}")
             
-            
-            
+            # Set a flag that can be checked by the main application
+            # This will be handled by the main application loop
             result = {
                 "success": True,
                 "message": f"Switching to V2 mode. Reason: {reason}",
@@ -199,7 +199,7 @@ async def handle_utility_function_call(function_call) -> types.FunctionResponse:
             reason = args.get("reason", "Returning to V1 mode requested")
             logger.info(f"V1 mode switch requested: {reason}")
             
-            
+            # This function will be called from V2 mode to switch back to V1
             result = {
                 "success": True,
                 "message": f"Switching to V1 mode. Reason: {reason}",
@@ -245,7 +245,7 @@ async def handle_utility_function_call(function_call) -> types.FunctionResponse:
             }
         )
 
-
+# --- Internal configuration and state for notes ---
 _last_note_ts: float | None = None
 _last_note_hash: str | None = None
 

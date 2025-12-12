@@ -7,6 +7,7 @@ Expose function calls for:
 - deny_vrchat_friend_request
 
 Configuration is read from environment variables or config.yml under `vrchat`.
+Never hardcode credentials; use env vars VRC_USERNAME/VRC_PASSWORD and optional VRC_TOTP_SECRET.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from vrchatapi import build_client_from_env_or_config, VRChatAPIError
 logger = logging.getLogger(__name__)
 
 
-
+# Module-level rate limiting state
 _LAST_VRCHAT_CALL_TS: float = 0.0
 _VRCHAT_RATE_LIMIT_SECONDS: float = float(os.environ.get("VRCHAT_TOOL_RATE_LIMIT_SECONDS", "30") or 30)
 
@@ -94,7 +95,7 @@ VRCHAT_FUNCTION_DECLARATIONS = [
     },
 ]
 
-
+# Cached authenticated VRChat client to avoid re-login and repeated 2FA on every call
 _CACHED_VRCHAT_INIT: Optional[Dict[str, Any]] = None
 
 
@@ -125,7 +126,7 @@ async def handle_vrchat_function_calls(function_call) -> types.FunctionResponse:
     name = function_call.name
     args = function_call.args or {}
 
-    
+    # Global rate-limiter: 30s between any VRChat calls to avoid spamming
     now = time.time()
     if _LAST_VRCHAT_CALL_TS and (now - _LAST_VRCHAT_CALL_TS) < _VRCHAT_RATE_LIMIT_SECONDS:
         wait = int(_VRCHAT_RATE_LIMIT_SECONDS - (now - _LAST_VRCHAT_CALL_TS))
@@ -140,7 +141,7 @@ async def handle_vrchat_function_calls(function_call) -> types.FunctionResponse:
             },
         )
 
-    
+    # Use a cached authenticated client so we don't re-login and trigger 2FA every call.
     init = _get_vrchat_client_cached()
     if not init.get("success"):
         return types.FunctionResponse(
@@ -156,7 +157,7 @@ async def handle_vrchat_function_calls(function_call) -> types.FunctionResponse:
             include_hidden = bool(args.get("include_hidden", False))
             limit = int(args.get("limit", 60))
             items = client.list_friend_requests(include_hidden=include_hidden, n=limit)
-            
+            # Normalize output to essential fields
             simplified = [
                 {
                     "id": it.get("id"),
@@ -201,7 +202,7 @@ async def handle_vrchat_function_calls(function_call) -> types.FunctionResponse:
             try:
                 avatar = client.get_own_avatar()
             except VRChatAPIError as e:
-                
+                # If unauthorized, clear cache and retry once
                 if "unauthorized" in str(e).lower() or "401" in str(e) or "403" in str(e):
                     _clear_vrchat_client_cache()
                     init2 = _get_vrchat_client_cached(force_refresh=True)
@@ -216,7 +217,7 @@ async def handle_vrchat_function_calls(function_call) -> types.FunctionResponse:
                 try:
                     saved = _load_avatar_store()
                     entry = _avatar_entry_from_avatar(avatar)
-                    
+                    # upsert by id
                     updated = False
                     for i, existing in enumerate(saved):
                         if existing.get("id") == entry["id"]:
@@ -237,7 +238,7 @@ async def handle_vrchat_function_calls(function_call) -> types.FunctionResponse:
                 result = {"success": False, "message": "avatar_id is required"}
             else:
                 sel = client.select_avatar(avatar_id)
-                
+                # If unauthorized, clear cache and retry once
                 if isinstance(sel, dict) and sel.get("status_code") in (401, 403):
                     _clear_vrchat_client_cache()
                     init2 = _get_vrchat_client_cached(force_refresh=True)
@@ -245,7 +246,7 @@ async def handle_vrchat_function_calls(function_call) -> types.FunctionResponse:
                         client = init2["client"]
                         sel = client.select_avatar(avatar_id)
                 ok = bool(sel.get("success")) if isinstance(sel, dict) else False
-                
+                # Try to enrich with local metadata if present
                 meta = None
                 try:
                     for it in _load_avatar_store():
@@ -254,7 +255,7 @@ async def handle_vrchat_function_calls(function_call) -> types.FunctionResponse:
                             break
                 except Exception:
                     pass
-                
+                # If switch succeeded, record last used avatar (prefer metadata if available)
                 if ok:
                     try:
                         entry = meta or {"id": avatar_id, "name": None, "authorName": None}
@@ -270,13 +271,13 @@ async def handle_vrchat_function_calls(function_call) -> types.FunctionResponse:
         else:
             result = {"success": False, "message": f"Unknown VRChat function: {name}"}
 
-        
+        # Set rate-limit timestamp on successful or handled result to avoid spamming
         _LAST_VRCHAT_CALL_TS = time.time()
         return types.FunctionResponse(id=function_call.id, name=name, response=result)
 
     except VRChatAPIError as e:
         logger.error(f"VRChat API error in {name}: {e}")
-        
+        # If unauthorized, clear cached client so a future call can re-authenticate
         try:
             if "unauthorized" in str(e).lower() or "401" in str(e) or "403" in str(e):
                 global _CACHED_VRCHAT_INIT
@@ -307,7 +308,7 @@ def _load_avatar_store() -> List[Dict[str, Any]]:
             data = json.load(f)
         if isinstance(data, list):
             return data
-        
+        # migrate old dict format if any
         if isinstance(data, dict) and "avatars" in data and isinstance(data["avatars"], list):
             return data["avatars"]
         return []

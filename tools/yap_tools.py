@@ -1,17 +1,34 @@
 """
-Yap mode tools for Gabriel "Arre Yaar ENABLE YAP MODE"
+Yap mode tools for Gabriel
+Allows the AI to temporarily disable audio input so it cannot be cut off
+by user speech until it explicitly disables yap mode again.
 """
 
 import logging
-from typing import Dict, Any
+import asyncio
+from typing import Dict, Any, Optional
 from google.genai import types
 
 logger = logging.getLogger(__name__)
 
-
+# Module-level states
 _YAP_MODE_ENABLED: bool = False
 _AI_SPEAKING: bool = False
-_YAP_TURNS_REMAINING: int = 0
+_YAP_TIMER_TASK: Optional[asyncio.Task] = None
+
+
+async def _yap_mode_auto_disable() -> None:
+    """Auto-disable yap mode after 60 seconds."""
+    try:
+        await asyncio.sleep(60)
+        global _YAP_MODE_ENABLED
+        if _YAP_MODE_ENABLED:
+            logger.info("Yap mode auto-disabled after 60 seconds")
+            _YAP_MODE_ENABLED = False
+    except asyncio.CancelledError:
+        logger.debug("Yap mode timer cancelled")
+    except Exception as e:
+        logger.error(f"Error in yap mode auto-disable: {e}")
 
 
 def is_yap_mode_enabled() -> bool:
@@ -22,15 +39,19 @@ def is_yap_mode_enabled() -> bool:
 def set_yap_mode(enabled: bool) -> None:
     """Set yap mode on or off."""
     global _YAP_MODE_ENABLED
-    global _YAP_TURNS_REMAINING
+    global _YAP_TIMER_TASK
     prev = _YAP_MODE_ENABLED
     _YAP_MODE_ENABLED = bool(enabled)
     
+    if _YAP_TIMER_TASK and not _YAP_TIMER_TASK.done():
+        _YAP_TIMER_TASK.cancel()
+        _YAP_TIMER_TASK = None
+    
     if _YAP_MODE_ENABLED:
-        _YAP_TURNS_REMAINING = 3
+        _YAP_TIMER_TASK = asyncio.create_task(_yap_mode_auto_disable())
+        logger.info(f"Yap mode ENABLED (was {'ENABLED' if prev else 'DISABLED'}); will auto-disable in 60 seconds")
     else:
-        _YAP_TURNS_REMAINING = 0
-    logger.info(f"Yap mode {'ENABLED' if _YAP_MODE_ENABLED else 'DISABLED'} (was {'ENABLED' if prev else 'DISABLED'}); turns_remaining={_YAP_TURNS_REMAINING}")
+        logger.info(f"Yap mode DISABLED (was {'ENABLED' if prev else 'DISABLED'})")
 
 
 def is_ai_speaking() -> bool:
@@ -47,35 +68,11 @@ def set_ai_speaking(speaking: bool) -> None:
     global _AI_SPEAKING
     prev = _AI_SPEAKING
     _AI_SPEAKING = bool(speaking)
-    
     if prev != _AI_SPEAKING:
         logger.info(f"AI speaking state: {'STARTED' if _AI_SPEAKING else 'ENDED'}")
 
 
-def notify_ai_turn_complete() -> int:
-    """Notify yap system that one AI turn completed and decrement counter.
-
-    Returns the remaining turns (0 means yap mode was auto-disabled).
-    """
-    global _YAP_TURNS_REMAINING
-    try:
-        if _YAP_MODE_ENABLED and _YAP_TURNS_REMAINING > 0:
-            _YAP_TURNS_REMAINING -= 1
-            logger.info(f"Yap turns remaining: {_YAP_TURNS_REMAINING}")
-            if _YAP_TURNS_REMAINING <= 0:
-                set_yap_mode(False)
-        return _YAP_TURNS_REMAINING
-    except Exception as e:
-        logger.warning(f"Error notifying yap turn complete: {e}")
-        return _YAP_TURNS_REMAINING
-
-
-def get_yap_turns_remaining() -> int:
-    """Return number of AI turns remaining before yap auto-disables."""
-    return _YAP_TURNS_REMAINING
-
-
-
+# Function declarations exposed to the model
 YAP_FUNCTION_DECLARATIONS = [
     {
         "name": "enable_yap_mode",

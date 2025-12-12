@@ -10,7 +10,7 @@ audio:
 
 # Gemini Model Configuration
 model:
-  name: "models/gemini-live-2.5-flash-preview"
+  name: "models/gemini-2.5-flash-native-audio-preview-09-2025"
 
 # Default Settings
 defaults:

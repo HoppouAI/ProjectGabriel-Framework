@@ -7,10 +7,10 @@ import logging
 from typing import Dict, Any
 from google.genai import types
 
-
+# Set up logging
 logger = logging.getLogger(__name__)
 
-
+# Import Vision functionality
 try:
     from vision import vision as vision_module
     VISION_AVAILABLE = True
@@ -20,7 +20,7 @@ except Exception as e:
     vision_module = None
     logger.warning(f"Vision module not available: {e}")
 
-
+# Vision function declarations
 VISION_FUNCTION_DECLARATIONS = [
     {
         "name": "vision_start_following",
