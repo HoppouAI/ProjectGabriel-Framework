@@ -69,7 +69,7 @@ class GabrielControlPanel {
         
         setInterval(() => this.checkStatus(), 30000);
         
-        this.addConsoleMessage('system', 'Control panel initialized. Checking Gabriel status...');
+        this.addConsoleMessage('system', 'Control panel initialized. Checking AI status...');
     }
 
     bindEvents() {
@@ -168,10 +168,10 @@ class GabrielControlPanel {
         
         if (isOnline) {
             statusDot.className = 'status-dot online';
-            statusText.textContent = 'Gabriel Online';
+            statusText.textContent = 'AI Online';
         } else {
             statusDot.className = 'status-dot offline';
-            statusText.textContent = 'Gabriel Offline';
+            statusText.textContent = 'AI Offline';
         }
     }
 
@@ -504,7 +504,7 @@ class GabrielControlPanel {
             if (lastLine && lastLine.classList.contains('console-line') && lastLine.classList.contains('response')) {
                 const messageSpan = lastLine.querySelector('.message');
                 if (messageSpan) {
-                    messageSpan.textContent += message.replace('Gabriel: ', '');
+                    messageSpan.textContent += message.replace('AI Responce: ', '');
                     
                     if (this.autoScroll) {
                         this.consoleOutput.scrollTop = this.consoleOutput.scrollHeight;
@@ -796,7 +796,7 @@ class GabrielControlPanel {
                 
             case 'text_chunk':
                 
-                this.addConsoleMessage('response', `Gabriel: ${data.text}`, false);
+                this.addConsoleMessage('response', `AI Response: ${data.text}`, false);
                 
                 
                 this.checkForFunctionResponse(data.text);
@@ -808,7 +808,7 @@ class GabrielControlPanel {
                 
             case 'complete_response':
                 
-                this.addConsoleMessage('response', `Gabriel (complete): ${data.text}`);
+                this.addConsoleMessage('response', `AI Response (complete): ${data.text}`);
                 
                 
                 this.checkForFunctionResponse(data.text);
@@ -960,9 +960,9 @@ class GabrielControlPanel {
         }
     }
 
-    
-    simulateGabrielResponse(text) {
-        this.addConsoleMessage('response', `Gabriel: ${text}`);
+
+    simulateAIResponse(text) {
+        this.addConsoleMessage('response', `AI Response: ${text}`);
     }
 
     

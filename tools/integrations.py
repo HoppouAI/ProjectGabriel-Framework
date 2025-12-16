@@ -1,5 +1,5 @@
 """
-Integration tools for Gabriel
+Integration tools
 Provides access to MyInstants, SFX, Personalities, and Movement modules.
 """
 

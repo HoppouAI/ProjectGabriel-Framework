@@ -1,5 +1,5 @@
 """
-Yap mode tools for Gabriel
+Yap mode tools
 Allows the AI to temporarily disable audio input so it cannot be cut off
 by user speech until it explicitly disables yap mode again.
 """

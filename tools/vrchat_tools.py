@@ -1,5 +1,5 @@
 """
-VRChat tools for Gabriel
+VRChat tools
 
 Expose function calls for:
 - list_vrchat_friend_requests

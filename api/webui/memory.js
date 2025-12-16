@@ -46,7 +46,7 @@ document.addEventListener('DOMContentLoaded', function() {
     initializeEventListeners();
     
     
-    showToast(`Connecting to Gabriel API at ${API_BASE}...`, 'info', 3000);
+    showToast(`Connecting to API at ${API_BASE}...`, 'info', 3000);
     
     
     if (elements.apiUrl) {
@@ -92,7 +92,7 @@ async function loadMemoryStatsWithRetry(maxRetries = 3, delay = 1000) {
             if (attempt === maxRetries) {
                 
                 console.error('All memory stats load attempts failed');
-                showToast(`Failed to load memory statistics after ${maxRetries} attempts. Check if Gabriel API is running on port 8000.`, 'error', 15000);
+                showToast(`Failed to load memory statistics after ${maxRetries} attempts. Check if the API is running on port 8000.`, 'error', 15000);
                 throw error;
             }
             
@@ -122,12 +122,12 @@ function showConnectionError() {
 
 function showConnectionHelp() {
     const helpMessage = `
-        <strong>Unable to connect to Gabriel API</strong><br><br>
+        <strong>Unable to connect to API</strong><br><br>
         Please ensure:<br>
-        • Gabriel API server is running<br>
+        • API server is running<br>
         • API is accessible at ${API_BASE}<br>
         • Memory endpoints are properly configured<br><br>
-        <em>If running locally, start Gabriel with API enabled on port 8000</em>
+        <em>If running locally, start the API server on port 8000</em>
     `;
     
     showToast(helpMessage, 'error', 15000);
@@ -258,7 +258,7 @@ async function checkApiStatus() {
         
         const contentType = response.headers.get('content-type');
         if (!contentType || !contentType.includes('application/json')) {
-            throw new Error('API server is not responding with JSON. Make sure Gabriel API is running on the correct port.');
+            throw new Error('API server is not responding with JSON. Make sure the API is running on the correct port.');
         }
         
         const data = await response.json();
@@ -271,7 +271,7 @@ async function checkApiStatus() {
     } catch (error) {
         console.error('Failed to check API status:', error);
         updateStatus('error', `API Unavailable: ${error.message}`);
-        showToast(`API connection failed: ${error.message}. Make sure Gabriel API is running on port 8000.`, 'error', 10000);
+        showToast(`API connection failed: ${error.message}. Make sure the API is running on port 8000.`, 'error', 10000);
     }
 }
 
@@ -330,7 +330,7 @@ async function loadMemories() {
         
         const contentType = response.headers.get('content-type');
         if (!contentType || !contentType.includes('application/json')) {
-            throw new Error('Server returned HTML instead of JSON. Check if Gabriel API is running and memory endpoints are available.');
+            throw new Error('Server returned HTML instead of JSON. Check if the API is running and memory endpoints are available.');
         }
         
         if (!response.ok) {
@@ -1206,7 +1206,7 @@ async function handleApiResponse(response) {
     
     const contentType = response.headers.get('content-type');
     if (!contentType || !contentType.includes('application/json')) {
-        throw new Error('Server returned HTML instead of JSON. Make sure Gabriel API is running and endpoints are available.');
+        throw new Error('Server returned HTML instead of JSON. Make sure the API is running and endpoints are available.');
     }
     
     if (!response.ok) {

@@ -16,6 +16,12 @@ model:
 defaults:
   mode: "screen"  # Options: camera, screen, none
 
+# V2 Mode Configuration
+v2_mode:
+  enabled: false  # Enable/disable V2 mode switching capability
+  # Disabled due to not being required due to Gemini 2.5 Flash Live (OG Model) being murdered by Google. RIP
+  # V2 Mode used to use the NEWER current model as it could do all the accents and voices, but now with Gemini 2.5 Flash Native Audio Preview, V2 Mode is not required anymore.
+
 # API Configuration
 api:
   version: "v1beta"
@@ -38,7 +44,7 @@ api:
     port: 5555                 # WebUI server port
 
 webhooks:
-  image_generation: "discord webhook url here"
+  image_generation: "discord webhook url here" # not required
 
 # Live Connect Configuration
 live_connect:
@@ -51,14 +57,18 @@ live_connect:
   
   # Speech configuration
   speech: # The language code also defines the Accent of the voice
-    language_code: "en-US" # https://ai.google.dev/gemini-api/docs/live-guide#supported-languages
+    language_code: "en-US" # https://ai.google.dev/gemini-api/docs/live-guide#supported-languages | No longer required by Newer Model
     voice:
       name: "Puck" # https://ai.google.dev/gemini-api/docs/speech-generation#voices
   
-  # Context window compression, The Model only suports 32k Context window https://ai.google.dev/gemini-api/docs/live-guide#context-window
+  # Context window configuration
+  # 12/16/2025 - Updated "default" context window settings to support larger context for Gemini 2.5 Flash Native Audio Preview
   context_window:
-    trigger_tokens: 24576
-    sliding_window_target_tokens: 12000
+    trigger_tokens: 102400
+    sliding_window_target_tokens: 81200
+    # These are used when the native audio model is detected (supports up to 128k context)
+    trigger_tokens_native: 102400
+    sliding_window_target_tokens_native: 81200
   
   # Session resumption configuration
   session_resumption:
@@ -71,10 +81,10 @@ live_connect:
   input_audio_transcription: {}
   
   # System instruction
-  prompt: "normal"
+  prompt: "default"
   
   # Custom prompt (used when prompt is set to "custom")
-  custom_prompt: "You are an LLM by Google, a helpful assistant."
+  custom_prompt: "You are an LLM by Google, a helpful assistant." # Not used for the actual prompt, add or customize in prompts.json
   # Thinking configuration (Gemini 'thinking' feature) Only on Gemini 2.5 Flash Native Audio Preview and above
   thinking_budget: 1024
 
@@ -99,11 +109,11 @@ video:
   # Screen capture settings
   screen:
     monitor_index: 0
-    frame_delay: 2  # seconds between frames
+    frame_delay: 2.0  # seconds between frames saves context window
   
   # Image processing
   image:
-    thumbnail_size: [1024, 1024]
+    thumbnail_size: [1280, 720] # Width, Height (set to 16:9 ratio default)
     format: "jpeg"
     mime_type: "image/jpeg"
 
@@ -213,9 +223,10 @@ memory:
   enabled: true
   
   # Number of recent memories to include in system prompt
-  recent_memories_count: 10
+  recent_memories_count: 15
   
   # MongoDB connection settings
+  # Not required if using SQLite backend
   mongo:
     uri: ""
     host: ""

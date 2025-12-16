@@ -1,24 +1,34 @@
 """
-Memory System for Gabriel
-Provides a simple but effective memory system using MongoDB.
+Memory System
+Provides a simple but effective memory system using MongoDB & SQLite.
 Supports three memory types:
 - Long-term: Permanent memories
 - Short-term: Auto-deleted after 7 days
 - Quick notes: Auto-deleted after 6 hours
+12/16/2025 - added SQLite support as an alternative backend.
 """
 
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from google.genai import types
-from pymongo import ASCENDING, DESCENDING, MongoClient
-from pymongo.collection import Collection, ReturnDocument
-from pymongo.errors import PyMongoError
+try:
+    from pymongo import ASCENDING, DESCENDING, MongoClient
+    from pymongo.collection import Collection, ReturnDocument
+    from pymongo.errors import PyMongoError
+except Exception:
+    ASCENDING = None
+    DESCENDING = None
+    MongoClient = None
+    Collection = None
+    ReturnDocument = None
+    PyMongoError = Exception
 try:
     import yaml  # type: ignore
 except Exception:
@@ -51,6 +61,28 @@ def _get_memory_config() -> Dict[str, Any]:
     memory_cfg = config.get("memory")
     if isinstance(memory_cfg, dict):
         return memory_cfg
+    return {}
+
+
+def _get_memory_backend() -> str:
+    cfg = _get_memory_config()
+    backend = cfg.get("backend") or cfg.get("storage") or "mongo"
+    try:
+        backend = str(backend).strip().lower()
+    except Exception:
+        backend = "mongo"
+    if backend in {"mongodb", "mongo"}:
+        return "mongo"
+    if backend in {"sqlite", "sqlite3"}:
+        return "sqlite"
+    return "mongo"
+
+
+def _get_sqlite_config() -> Dict[str, Any]:
+    cfg = _get_memory_config()
+    sqlite_cfg = cfg.get("sqlite")
+    if isinstance(sqlite_cfg, dict):
+        return sqlite_cfg
     return {}
 
 
@@ -102,6 +134,7 @@ def get_mongo_connection_settings(overrides: Optional[Dict[str, Any]] = None) ->
 
 class MemorySystem:
     def __init__(self, mongo_uri: Optional[str] = None, database: Optional[str] = None, collection: Optional[str] = None):
+        self.backend = _get_memory_backend()
         overrides: Dict[str, Any] = {}
         if mongo_uri is not None:
             overrides["uri"] = mongo_uri
@@ -112,10 +145,13 @@ class MemorySystem:
         self.settings = get_mongo_connection_settings(overrides if overrides else None)
         self.client: Optional[MongoClient] = None
         self.collection: Optional[Collection] = None
+        self.sqlite_conn: Optional[sqlite3.Connection] = None
+        self.sqlite_path: Optional[str] = None
+        self._sqlite_lock = threading.RLock()
         self.cleanup_thread: Optional[threading.Thread] = None
         self.cleanup_running = False
         self._connect()
-        if self.collection is not None:
+        if self._is_storage_ready():
             self.start_cleanup_thread()
 
     def __del__(self):
@@ -123,6 +159,13 @@ class MemorySystem:
 
     def close(self):
         self.stop_cleanup_thread()
+        if self.sqlite_conn is not None:
+            try:
+                self.sqlite_conn.close()
+            except Exception as exc:
+                logger.debug(f"SQLite close during shutdown: {exc}")
+            finally:
+                self.sqlite_conn = None
         if self.client is not None:
             try:
                 self.client.close()
@@ -132,9 +175,20 @@ class MemorySystem:
                 self.client = None
 
     def _connect(self):
+        backend = _get_memory_backend()
+        self.backend = backend
+        if backend == "sqlite":
+            self._connect_sqlite()
+            return
+        self._connect_mongo()
+
+    def _connect_mongo(self):
         uri = self.settings.get("uri") or ""
         if not uri:
             logger.error("MongoDB URI is not configured; memory system disabled")
+            return
+        if MongoClient is None:
+            logger.error("pymongo is not available; cannot use mongo memory backend")
             return
         try:
             self.client = MongoClient(uri, serverSelectionTimeoutMS=5000)
@@ -148,7 +202,61 @@ class MemorySystem:
             logger.error(f"Failed to initialize MongoDB memory storage: {exc}")
             self.collection = None
 
+    def _connect_sqlite(self):
+        try:
+            sqlite_cfg = _get_sqlite_config()
+            path = sqlite_cfg.get("path") or sqlite_cfg.get("file") or "gabriel_memories.sqlite"
+            path = str(path)
+            if not os.path.isabs(path):
+                path = os.path.join(os.getcwd(), path)
+            parent = os.path.dirname(path)
+            if parent and not os.path.exists(parent):
+                try:
+                    os.makedirs(parent, exist_ok=True)
+                except Exception:
+                    pass
+            with self._sqlite_lock:
+                self.sqlite_path = path
+                self.sqlite_conn = sqlite3.connect(path, check_same_thread=False)
+                self.sqlite_conn.row_factory = sqlite3.Row
+                try:
+                    self.sqlite_conn.execute("PRAGMA journal_mode=WAL")
+                except Exception:
+                    pass
+                self.init_collection()
+            logger.info(f"Memory system connected to SQLite at {path}")
+        except Exception as exc:
+            logger.error(f"Failed to initialize SQLite memory storage: {exc}")
+            self.sqlite_conn = None
+            self.sqlite_path = None
+
     def init_collection(self):
+        if self.backend == "sqlite":
+            conn = self.sqlite_conn
+            if conn is None:
+                return
+            with self._sqlite_lock:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS memories ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    "key TEXT NOT NULL UNIQUE,"
+                    "content TEXT NOT NULL,"
+                    "category TEXT NOT NULL,"
+                    "memory_type TEXT NOT NULL,"
+                    "tags_json TEXT NOT NULL,"
+                    "content_hash TEXT NOT NULL,"
+                    "created_at TEXT NOT NULL,"
+                    "updated_at TEXT,"
+                    "access_count INTEGER NOT NULL DEFAULT 0"
+                    ")"
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON memories(category)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON memories(created_at)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_type ON memories(memory_type)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_type_created ON memories(memory_type, created_at)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_content_hash ON memories(content_hash)")
+                conn.commit()
+            return
         if self.collection is None:
             return
         try:
@@ -161,14 +269,27 @@ class MemorySystem:
         except PyMongoError as exc:
             logger.error(f"Failed to ensure memory indexes: {exc}")
 
+    def _is_storage_ready(self) -> bool:
+        if self.backend == "sqlite":
+            return self.sqlite_conn is not None
+        return self.collection is not None
+
+    def is_available(self) -> bool:
+        return self._ensure_collection()
+
     def _ensure_collection(self) -> bool:
+        if self.backend == "sqlite":
+            if self.sqlite_conn is not None:
+                return True
+            self._connect()
+            return self.sqlite_conn is not None
         if self.collection is not None:
             return True
         self._connect()
         return self.collection is not None
     
     def start_cleanup_thread(self):
-        if self.collection is None:
+        if not self._is_storage_ready():
             return
         if self.cleanup_running:
             return
@@ -190,7 +311,7 @@ class MemorySystem:
     def _cleanup_worker(self):
         while self.cleanup_running:
             try:
-                if self.collection is not None:
+                if self._is_storage_ready():
                     self.cleanup_expired_memories()
                 time.sleep(600)
             except Exception as exc:
@@ -205,23 +326,44 @@ class MemorySystem:
             note_cfg = _get_note_config()
             ttl_hours = float(note_cfg.get("ttl_hours", 6))
             quick_cutoff = now - timedelta(hours=ttl_hours)
-            quick_filter = {
-                "memory_type": MEMORY_TYPE_QUICK_NOTE,
-                "created_at": {"$lt": quick_cutoff},
-                "tags": {"$nin": ["pinned"]}
-            }
-            quick_result = self.collection.delete_many(quick_filter)
             st_cfg = _get_short_term_config()
             ttl_days = float(st_cfg.get("ttl_days", 7))
             short_cutoff = now - timedelta(days=ttl_days)
-            short_filter = {
-                "memory_type": MEMORY_TYPE_SHORT_TERM,
-                "created_at": {"$lt": short_cutoff},
-                "tags": {"$nin": ["pinned"]}
-            }
-            short_result = self.collection.delete_many(short_filter)
-            quick_deleted = quick_result.deleted_count if quick_result else 0
-            short_deleted = short_result.deleted_count if short_result else 0
+            quick_deleted = 0
+            short_deleted = 0
+            if self.backend == "sqlite":
+                conn = self.sqlite_conn
+                if conn is None:
+                    return {"error": "Memory storage unavailable"}
+                quick_iso = quick_cutoff.isoformat()
+                short_iso = short_cutoff.isoformat()
+                with self._sqlite_lock:
+                    qr = conn.execute(
+                        "DELETE FROM memories WHERE memory_type = ? AND created_at < ? AND (tags_json NOT LIKE ?)",
+                        (MEMORY_TYPE_QUICK_NOTE, quick_iso, '%"pinned"%')
+                    )
+                    quick_deleted = int(qr.rowcount or 0)
+                    sr = conn.execute(
+                        "DELETE FROM memories WHERE memory_type = ? AND created_at < ? AND (tags_json NOT LIKE ?)",
+                        (MEMORY_TYPE_SHORT_TERM, short_iso, '%"pinned"%')
+                    )
+                    short_deleted = int(sr.rowcount or 0)
+                    conn.commit()
+            else:
+                quick_filter = {
+                    "memory_type": MEMORY_TYPE_QUICK_NOTE,
+                    "created_at": {"$lt": quick_cutoff},
+                    "tags": {"$nin": ["pinned"]}
+                }
+                short_filter = {
+                    "memory_type": MEMORY_TYPE_SHORT_TERM,
+                    "created_at": {"$lt": short_cutoff},
+                    "tags": {"$nin": ["pinned"]}
+                }
+                quick_result = self.collection.delete_many(quick_filter)
+                short_result = self.collection.delete_many(short_filter)
+                quick_deleted = quick_result.deleted_count if quick_result else 0
+                short_deleted = short_result.deleted_count if short_result else 0
             if quick_deleted or short_deleted:
                 logger.info(f"Cleanup completed: {quick_deleted} quick notes, {short_deleted} short-term memories deleted")
             return {
@@ -245,6 +387,37 @@ class MemorySystem:
         chash = _hash_text(str(content))
         now = datetime.utcnow()
         try:
+            if self.backend == "sqlite":
+                import json
+                conn = self.sqlite_conn
+                if conn is None:
+                    return {"success": False, "message": "Memory storage unavailable"}
+                now_iso = now.isoformat()
+                tags_json = json.dumps(tags_list, ensure_ascii=False)
+                with self._sqlite_lock:
+                    conn.execute(
+                        "INSERT INTO memories(key, content, category, memory_type, tags_json, content_hash, created_at, updated_at, access_count) "
+                        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, 0) "
+                        "ON CONFLICT(key) DO UPDATE SET "
+                        "content=excluded.content, "
+                        "category=excluded.category, "
+                        "memory_type=excluded.memory_type, "
+                        "tags_json=excluded.tags_json, "
+                        "content_hash=excluded.content_hash, "
+                        "updated_at=excluded.updated_at",
+                        (key, content, category, memory_type, tags_json, chash, now_iso, now_iso)
+                    )
+                    row = conn.execute("SELECT id FROM memories WHERE key = ?", (key,)).fetchone()
+                    conn.commit()
+                mid = str(row[0]) if row else ""
+                logger.info(f"Memory saved: {key} (type: {memory_type})")
+                return {
+                    "success": True,
+                    "message": f"Memory '{key}' saved successfully as {memory_type}",
+                    "id": mid,
+                    "key": key,
+                    "memory_type": memory_type
+                }
             doc = self.collection.find_one_and_update(
                 {"key": key},
                 {
@@ -286,6 +459,24 @@ class MemorySystem:
             return False
         try:
             since = datetime.utcnow() - timedelta(seconds=window_seconds)
+            if self.backend == "sqlite":
+                conn = self.sqlite_conn
+                if conn is None:
+                    return False
+                since_iso = since.isoformat()
+                with self._sqlite_lock:
+                    if types:
+                        placeholders = ",".join(["?"] * len(types))
+                        row = conn.execute(
+                            f"SELECT id FROM memories WHERE content_hash = ? AND created_at > ? AND memory_type IN ({placeholders}) LIMIT 1",
+                            (content_hash, since_iso, *types)
+                        ).fetchone()
+                    else:
+                        row = conn.execute(
+                            "SELECT id FROM memories WHERE content_hash = ? AND created_at > ? LIMIT 1",
+                            (content_hash, since_iso)
+                        ).fetchone()
+                return row is not None
             query: Dict[str, Any] = {
                 "content_hash": content_hash,
                 "created_at": {"$gt": since},
@@ -301,6 +492,37 @@ class MemorySystem:
         if not self._ensure_collection():
             return {"success": False, "message": "Memory storage unavailable"}
         try:
+            if self.backend == "sqlite":
+                conn = self.sqlite_conn
+                if conn is None:
+                    return {"success": False, "message": "Memory storage unavailable"}
+                import json
+                with self._sqlite_lock:
+                    row = conn.execute(
+                        "SELECT id, key, content, category, memory_type, tags_json, created_at, updated_at, access_count FROM memories WHERE key = ?",
+                        (key,)
+                    ).fetchone()
+                    if not row:
+                        return {"success": False, "message": f"Memory '{key}' not found"}
+                    conn.execute("UPDATE memories SET access_count = access_count + 1 WHERE key = ?", (key,))
+                    conn.commit()
+                    try:
+                        tags = json.loads(row["tags_json"]) if row["tags_json"] else []
+                    except Exception:
+                        tags = []
+                    memory = {
+                        "id": str(row["id"]),
+                        "key": row["key"],
+                        "content": row["content"],
+                        "category": row["category"],
+                        "memory_type": row["memory_type"],
+                        "tags": tags,
+                        "created_at": row["created_at"],
+                        "updated_at": row["updated_at"],
+                        "access_count": int(row["access_count"] or 0) + 1,
+                    }
+                logger.info(f"Memory read: {key} (type: {memory['memory_type']})")
+                return {"success": True, "memory": memory}
             doc = self.collection.find_one_and_update(
                 {"key": key},
                 {"$inc": {"access_count": 1}},
@@ -328,6 +550,43 @@ class MemorySystem:
         if not self._ensure_collection():
             return {"success": False, "message": "Memory storage unavailable"}
         try:
+            if self.backend == "sqlite":
+                conn = self.sqlite_conn
+                if conn is None:
+                    return {"success": False, "message": "Memory storage unavailable"}
+                with self._sqlite_lock:
+                    row = conn.execute("SELECT id FROM memories WHERE key = ?", (key,)).fetchone()
+                    if not row:
+                        return {"success": False, "message": f"Memory '{key}' not found"}
+                if memory_type is not None:
+                    valid_types = [MEMORY_TYPE_LONG_TERM, MEMORY_TYPE_SHORT_TERM, MEMORY_TYPE_QUICK_NOTE]
+                    if memory_type not in valid_types:
+                        return {
+                            "success": False,
+                            "message": f"Invalid memory type. Must be one of: {', '.join(valid_types)}"
+                        }
+                updates: Dict[str, Any] = {}
+                if content is not None:
+                    updates["content"] = content
+                    updates["content_hash"] = _hash_text(str(content))
+                if category is not None:
+                    updates["category"] = category
+                if memory_type is not None:
+                    updates["memory_type"] = memory_type
+                if tags is not None:
+                    import json
+                    updates["tags_json"] = json.dumps(list(tags), ensure_ascii=False)
+                if updates:
+                    updates["updated_at"] = datetime.utcnow().isoformat()
+                    set_sql = ",".join([f"{k} = ?" for k in updates.keys()])
+                    values = list(updates.values())
+                    values.append(key)
+                    with self._sqlite_lock:
+                        conn.execute(f"UPDATE memories SET {set_sql} WHERE key = ?", values)
+                        conn.commit()
+                logger.info(f"Memory updated: {key}")
+                return {"success": True, "message": f"Memory '{key}' updated successfully"}
+
             existing = self.collection.find_one({"key": key})
             if not existing:
                 return {
@@ -370,6 +629,18 @@ class MemorySystem:
         if not self._ensure_collection():
             return {"success": False, "message": "Memory storage unavailable"}
         try:
+            if self.backend == "sqlite":
+                conn = self.sqlite_conn
+                if conn is None:
+                    return {"success": False, "message": "Memory storage unavailable"}
+                with self._sqlite_lock:
+                    cur = conn.execute("DELETE FROM memories WHERE key = ?", (key,))
+                    deleted = int(cur.rowcount or 0)
+                    conn.commit()
+                if deleted:
+                    logger.info(f"Memory deleted: {key}")
+                    return {"success": True, "message": f"Memory '{key}' deleted successfully"}
+                return {"success": False, "message": f"Memory '{key}' not found"}
             result = self.collection.delete_one({"key": key})
             if result.deleted_count:
                 logger.info(f"Memory deleted: {key}")
@@ -392,6 +663,50 @@ class MemorySystem:
         if not self._ensure_collection():
             return {"success": False, "message": "Memory storage unavailable"}
         try:
+            if self.backend == "sqlite":
+                import json
+                conn = self.sqlite_conn
+                if conn is None:
+                    return {"success": False, "message": "Memory storage unavailable"}
+                wh = []
+                params: List[Any] = []
+                if category:
+                    wh.append("category = ?")
+                    params.append(category)
+                if memory_type:
+                    wh.append("memory_type = ?")
+                    params.append(memory_type)
+                where_sql = (" WHERE " + " AND ".join(wh)) if wh else ""
+                lim = max(1, int(limit))
+                sql = (
+                    "SELECT id, key, content, category, memory_type, tags_json, created_at, updated_at, access_count "
+                    "FROM memories" + where_sql + " ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?"
+                )
+                params2 = params + [lim]
+                memories: List[Dict[str, Any]] = []
+                with self._sqlite_lock:
+                    rows = conn.execute(sql, params2).fetchall()
+                for row in rows:
+                    content = row["content"] or ""
+                    if len(content) > 200:
+                        content = content[:200] + "..."
+                    try:
+                        tags = json.loads(row["tags_json"]) if row["tags_json"] else []
+                    except Exception:
+                        tags = []
+                    memories.append({
+                        "id": str(row["id"]),
+                        "key": row["key"],
+                        "content": content,
+                        "category": row["category"] or "general",
+                        "memory_type": row["memory_type"] or MEMORY_TYPE_LONG_TERM,
+                        "tags": tags,
+                        "created_at": row["created_at"],
+                        "updated_at": row["updated_at"],
+                        "access_count": int(row["access_count"] or 0),
+                    })
+                return {"success": True, "memories": memories, "count": len(memories)}
+
             filters: Dict[str, Any] = {}
             if category:
                 filters["category"] = category
@@ -443,6 +758,41 @@ class MemorySystem:
         if not self._ensure_collection():
             return {"success": False, "message": "Memory storage unavailable"}
         try:
+            if self.backend == "sqlite":
+                conn = self.sqlite_conn
+                if conn is None:
+                    return {"success": False, "message": "Memory storage unavailable"}
+                term = str(search_term)
+                like = f"%{term}%"
+                wh = ["(key LIKE ? OR content LIKE ?)"]
+                params: List[Any] = [like, like]
+                if memory_type:
+                    wh.append("memory_type = ?")
+                    params.append(memory_type)
+                lim = max(1, int(limit))
+                params.append(lim)
+                sql = (
+                    "SELECT id, key, content, category, memory_type, created_at, updated_at, access_count "
+                    "FROM memories WHERE " + " AND ".join(wh) + " "
+                    "ORDER BY access_count DESC, COALESCE(updated_at, created_at) DESC LIMIT ?"
+                )
+                memories: List[Dict[str, Any]] = []
+                with self._sqlite_lock:
+                    rows = conn.execute(sql, params).fetchall()
+                for row in rows:
+                    content = row["content"] or ""
+                    if len(content) > 200:
+                        content = content[:200] + "..."
+                    memories.append({
+                        "key": row["key"],
+                        "content": content,
+                        "category": row["category"] or "general",
+                        "memory_type": row["memory_type"] or MEMORY_TYPE_LONG_TERM,
+                        "created_at": row["created_at"],
+                        "updated_at": row["updated_at"],
+                        "access_count": int(row["access_count"] or 0)
+                    })
+                return {"success": True, "memories": memories, "count": len(memories), "search_term": search_term}
             pattern = re.escape(search_term)
             regex = {"$regex": pattern, "$options": "i"}
             query: Dict[str, Any] = {
@@ -496,6 +846,24 @@ class MemorySystem:
         if not self._ensure_collection():
             return {"success": False, "message": "Memory storage unavailable"}
         try:
+            if self.backend == "sqlite":
+                conn = self.sqlite_conn
+                if conn is None:
+                    return {"success": False, "message": "Memory storage unavailable"}
+                stats = {
+                    "total": 0,
+                    "long_term": 0,
+                    "short_term": 0,
+                    "quick_note": 0
+                }
+                with self._sqlite_lock:
+                    rows = conn.execute("SELECT memory_type, COUNT(1) AS c FROM memories GROUP BY memory_type").fetchall()
+                for row in rows:
+                    mt = row[0] or "unknown"
+                    c = int(row[1] or 0)
+                    stats[mt] = c
+                    stats["total"] += c
+                return {"success": True, "stats": stats}
             pipeline = [
                 {"$group": {"_id": "$memory_type", "count": {"$sum": 1}}},
             ]
@@ -521,6 +889,103 @@ class MemorySystem:
                 "success": False,
                 "message": f"Failed to get memory stats: {str(exc)}"
             }
+
+    def get_memory_count(self) -> int:
+        if not self._ensure_collection():
+            return 0
+        try:
+            if self.backend == "sqlite":
+                conn = self.sqlite_conn
+                if conn is None:
+                    return 0
+                with self._sqlite_lock:
+                    row = conn.execute("SELECT COUNT(1) FROM memories").fetchone()
+                return int(row[0] if row else 0)
+            return int(self.collection.count_documents({}))
+        except Exception:
+            return 0
+
+    def get_recent_memories_for_prompt(self, count: int = 10) -> List[Dict[str, Any]]:
+        if not self._ensure_collection():
+            return []
+        try:
+            real_limit = max(1, int(int(count) * 0.8))
+            note_limit = max(0, int(count) - real_limit)
+            if self.backend == "sqlite":
+                import json
+                conn = self.sqlite_conn
+                if conn is None:
+                    return []
+                memories: List[Dict[str, Any]] = []
+                with self._sqlite_lock:
+                    rows_real = conn.execute(
+                        "SELECT id, key, content, category, created_at, tags_json FROM memories "
+                        "WHERE memory_type IN (?, ?) ORDER BY created_at DESC LIMIT ?",
+                        (MEMORY_TYPE_LONG_TERM, MEMORY_TYPE_SHORT_TERM, real_limit)
+                    ).fetchall()
+                    rows_note: List[sqlite3.Row] = []
+                    if note_limit:
+                        rows_note = conn.execute(
+                            "SELECT id, key, content, category, created_at, tags_json FROM memories "
+                            "WHERE memory_type = ? ORDER BY created_at DESC LIMIT ?",
+                            (MEMORY_TYPE_QUICK_NOTE, note_limit)
+                        ).fetchall()
+                for row in list(rows_real) + list(rows_note):
+                    try:
+                        tags_list = json.loads(row["tags_json"]) if row["tags_json"] else []
+                    except Exception:
+                        tags_list = []
+                    tags_str = ",".join(tags_list) if isinstance(tags_list, list) else str(tags_list)
+                    memories.append({
+                        "id": str(row["id"]),
+                        "key": row["key"],
+                        "content": row["content"],
+                        "category": row["category"] or "general",
+                        "created_at": row["created_at"] or "",
+                        "tags": tags_str
+                    })
+                return memories
+            docs: List[Dict[str, Any]] = []
+            real_docs = list(
+                self.collection.find(
+                    {"memory_type": {"$in": [MEMORY_TYPE_LONG_TERM, MEMORY_TYPE_SHORT_TERM]}},
+                    {"key": 1, "content": 1, "category": 1, "created_at": 1, "tags": 1},
+                ).sort("created_at", DESCENDING).limit(real_limit)
+            )
+            note_docs: List[Dict[str, Any]] = []
+            if note_limit:
+                note_docs = list(
+                    self.collection.find(
+                        {"memory_type": MEMORY_TYPE_QUICK_NOTE},
+                        {"key": 1, "content": 1, "category": 1, "created_at": 1, "tags": 1},
+                    ).sort("created_at", DESCENDING).limit(note_limit)
+                )
+            docs = real_docs + note_docs
+            memories: List[Dict[str, Any]] = []
+            for doc in docs:
+                created_at = doc.get("created_at")
+                if isinstance(created_at, datetime):
+                    created = created_at.isoformat()
+                elif created_at:
+                    created = str(created_at)
+                else:
+                    created = ""
+                tags = doc.get("tags") or []
+                if isinstance(tags, list):
+                    tags_str = ",".join(tags)
+                else:
+                    tags_str = str(tags)
+                memories.append({
+                    "id": str(doc.get("_id")),
+                    "key": doc.get("key"),
+                    "content": doc.get("content"),
+                    "category": doc.get("category", "general"),
+                    "created_at": created,
+                    "tags": tags_str
+                })
+            return memories
+        except Exception:
+            return []
 
     def _format_memory_doc(self, doc: Dict[str, Any]) -> Dict[str, Any]:
         return {

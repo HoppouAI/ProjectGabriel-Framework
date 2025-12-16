@@ -1,5 +1,5 @@
 """
-Utility tools for Gabriel
+Utility tools
 Provides time, note-taking, and mode switching capabilities.
 """
 

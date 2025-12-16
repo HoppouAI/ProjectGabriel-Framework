@@ -1,6 +1,6 @@
 """
 MyInstants module for function calling with Gemini Live API
-Provides tools for Gabriel to search, download, and play sound effects from MyInstants.
+Provides tools to search, download, and play sound effects from MyInstants.
 """
 
 import os

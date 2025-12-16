@@ -1,5 +1,5 @@
 """
-Vision tools for Gabriel
+Vision tools
 Provides vision-based player following functionality.
 """
 
