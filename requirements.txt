@@ -9,8 +9,8 @@ python-osc
 pydirectinput
 pymongo
 # For CUDA 12.6 builds of PyTorch (reccommended if you have a compatible NVIDIA GPU) I've personally used a GTX 1650 4GB
-# uv pip install --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio
-# If you dont have uv just do pip install --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio
+# uv pip install --index-url https://download.pytorch.org/whl/cu126 torch torchvision
+# If you dont have uv just do pip install --index-url https://download.pytorch.org/whl/cu126 torch torchvision
 ultralytics
 torch
 numpy

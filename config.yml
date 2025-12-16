@@ -221,6 +221,11 @@ osc:
 memory:
   # Enable/disable memory integration in system prompts
   enabled: true
+
+  backend: "sqlite"
+
+  sqlite:
+    path: "memories.sqlite"
   
   # Number of recent memories to include in system prompt
   recent_memories_count: 15

@@ -20,11 +20,26 @@ Before setting up the code, you need to set up the environment and audio drivers
     *   [Virtual Audio Cable (Hi-Fi)](https://vb-audio.com/Cable/#DownloadASIOBridge) (Or any secondary cable)
 2.  **Gemini API Key**: Obtain a key from Google AI Studio.
 
-## Installation
+## Installation (Easy)
+
+We have included a setup script that handles everything for you.
+
+1.  Run `setup.bat` in the main folder.
+2.  It will automatically install `uv` (our package manager) to a local folder so it doesn't mess with your system.
+3.  It will create the virtual environment and install Python 3.13.3.
+4.  It will ask if you want to install for **NVIDIA GPU** or **CPU Only**.
+    *   Choose **1** if you have an NVIDIA card (better performance for vision).
+    *   Choose **2** if you don't.
+
+Once it finishes, you are ready to configure the AI.
+
+## Manual Installation
+
+If you prefer to set things up yourself or the script doesn't work for you, you can follow these steps.
 
 We recommend using **uv** for installation. It is a fast package manager that will automatically fetch the correct version of Python (3.13.3) for this project when you create the environment.
 
-### Option 1: Using UV (Recommended)
+### Option 1: Using UV (Manual)
 
 official docs at: https://docs.astral.sh/uv/getting-started/installation/
 
@@ -63,7 +78,7 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### GPU Support (Optional)
+### GPU Support (Manual)
 
 If you have an NVIDIA GPU, install the CUDA-enabled version of PyTorch to improve vision performance. Run this command *after* installing the main requirements:
 
@@ -108,7 +123,7 @@ If running on a lower-end PC or without a dedicated GPU, you should disable the 
 
 For the AI to communicate in VRChat, you must configure the Windows Volume Mixer and VRChat settings correctly.
 
-**Note:** You must run the application (`python supervisor.py`) for it to appear in the Volume Mixer.
+**Note:** You must run the application (`run.bat` or `python supervisor.py`) for it to appear in the Volume Mixer.
 
 ### Windows Volume Mixer Settings
 
@@ -128,7 +143,11 @@ Go to Audio Settings -> Microphone in VRChat:
 
 ## Usage
 
-To start the framework, run the supervisor script inside your activated environment:
+### Easy Start
+Just run `run.bat` in the main folder. It will start the supervisor script for you.
+
+### Manual Start
+To start the framework manually, run the supervisor script inside your activated environment:
 
 ```bash
 python supervisor.py
