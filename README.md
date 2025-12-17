@@ -7,6 +7,7 @@ The Code is based on the Project Gabriel Framework by [Hoppou.AI](https://hoppou
 
 # Tutorials:
 Easy install tutorial: https://www.youtube.com/watch?v=TPZSzJMIVKQ
+
 Longer full install: https://www.youtube.com/watch?v=E4CQecBAXNM
 
 ## Summary
