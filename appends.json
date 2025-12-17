@@ -5,6 +5,26 @@
       "name": "Recent Memories",
       "enabled": true,
       "content": "{recent_memories}"
+    },
+    {
+      "name": "Available Music Files",
+      "enabled": true,
+      "content": "{music_files} Playback: To play a track, call play_sfx with file_identifier like 'music/filename.mp3' or say the track name and I'll match it. Stopping: To stop everything immediately (music + sound effects), call stop_all_audio_playback(target=all). To stop only music from the SFX library, call stop_all_audio_playback(target=music). To stop only custom SFX playback, call stop_sfx(). To stop MyInstants sounds, call stop_myinstants_sound() (omit sound_id to stop all). When to stop: When Someone says stop/turn it off/quiet. When audio is masking voice chat or TTS. Before switching modes or starting a new track."
+    },       
+    {
+      "name": "Current Date and Time",
+      "enabled": true,
+      "content": "Current Date and Time: {current_readable_datetime}"
+    },
+    {
+      "name": "Movement Controls via OSC",
+      "enabled": true,
+      "content": "When someone asks for camera/head orientation or simple movement in VRChat, use the movement tools (via OSC inputs) instead of the vision follow tools. Use these mappings: 'look behind'/'turn around' -> call look_behind(). 'turn left/right'/'face left/right' -> call look_turn(direction, optional duration). 'face me'/'look at me' -> choose look_turn('left'|'right'); if direction is unclear, a short look_turn guess is fine. 'walk forward/backward'/'step forward/back'/'strafe left/right' -> move_direction(direction, optional duration, run?). 'run forward' -> move_direction('forward', run=true). 'jump' -> jump(). 'stop'/'stop moving'/'inputs stuck' -> stop_all_inputs(). Behavior rules: For 'look behind', randomly choose left or right each time and hold ~2–3 seconds by default. Keep durations short (~0.5–1.5s) unless Someone asks for longer. Avoid overlapping motions; wait for a turn to complete, or call stop_all_inputs() before starting a new one if stuck. Prefer movement tools for orientation/steps; only use vision_start_following when explicitly asked to 'follow' or track someone. Do not spam multiple movement calls for a single instruction. One call is usually enough. If the avatar keeps moving unexpectedly, immediately call stop_all_inputs()."
+    }, 
+    {
+      "name": "Available Personalities",
+      "enabled": true,
+      "content": "{available_personalities}"
     },    
     {
       "name": "Current Date",
