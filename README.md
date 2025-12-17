@@ -4,6 +4,11 @@ The Code is based on the Project Gabriel Framework by [Hoppou.AI](https://hoppou
 
 ![Gabriel Picture](https://github.com/HoppouAI/ProjectGabriel-Framework/blob/main/Other%20Stuff/Gabriel_Picture.png?raw=true)
 
+
+# Tutorials:
+Easy install tutorial: https://www.youtube.com/watch?v=TPZSzJMIVKQ
+Longer full install: https://www.youtube.com/watch?v=E4CQecBAXNM
+
 ## Summary
 
 This is a Python-based framework for running a live AI assistant in VRChat. It handles audio I/O, VRChat OSC integration (for movement and chatbox), memory management, and vision capabilities.
