@@ -11,6 +11,8 @@ import hashlib
 import requests
 import pygame
 import threading
+import time
+from collections import deque
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from urllib.parse import quote, urlparse
@@ -38,30 +40,106 @@ class SimpleSoundQueue:
             logger.info("Gabriel's TTS stopped - will play queued sounds")
         
     async def process_queue(self, client_instance):
-        """Play all queued sounds if Gabriel is not speaking."""
+        """Play all queued sounds if Gabriel is not speaking.
+
+        Implements burst/rapid-play for consecutive repeats of the same sound
+        when the client's repeat configuration threshold is hit.
+        """
         if self.is_ai_speaking or not self.queued_sounds:
             return
-            
-        
+
         sounds_to_play = self.queued_sounds.copy()
         self.queued_sounds.clear()
-        
-        for sound_info in sounds_to_play:
-            await self._play_queued_sound(sound_info, client_instance)
-            
-    async def _play_queued_sound(self, sound_info: Dict[str, Any], client_instance):
-        """Actually play a queued sound."""
-        try:
-            result = client_instance._play_sound_immediate(
-                sound_info["sound_id"],
-                sound_info.get("title"),
-                sound_info.get("mp3_url"),
-                sound_info.get("volume", 0.7)
-            )
-            if result["success"]:
-                logger.info(f"Played queued sound: {sound_info.get('title', 'Unknown')}")
+
+        i = 0
+        n = len(sounds_to_play)
+        while i < n:
+            # Group consecutive identical sound_ids
+            current = sounds_to_play[i]
+            sid = current.get("sound_id")
+            j = i + 1
+            group = [current]
+            while j < n and sounds_to_play[j].get("sound_id") == sid:
+                group.append(sounds_to_play[j])
+                j += 1
+
+            # Compute total repeats requested for this consecutive group
+            total_count = sum(int(g.get("count", 1)) for g in group)
+
+            # Check client's repeat config to decide if we should burst-play
+            cfg = getattr(client_instance, "repeat_config", None)
+            do_burst = False
+            rapid_interval = 0.05
+            if cfg and cfg.get("enabled") and total_count >= int(cfg.get("threshold", 5)):
+                do_burst = True
+                rapid_interval = float(cfg.get("rapid_interval", 0.05))
+
+            if do_burst:
+                logger.info(f"Burst-playing sound '{sid}' {total_count} times with interval {rapid_interval}s")
+                # Play quickly in succession total_count times (small awaits so loop doesn't starve event loop)
+                for k in range(total_count):
+                    try:
+                        g = group[0]
+                        client_instance._play_sound_immediate(
+                            g["sound_id"],
+                            g.get("title"),
+                            g.get("mp3_url"),
+                            g.get("volume", 0.7)
+                        )
+                    except Exception as e:
+                        logger.error(f"Error burst-playing sound {sid}: {e}")
+                    await asyncio.sleep(rapid_interval)
             else:
-                logger.error(f"Failed to play queued sound: {result.get('message', 'Unknown error')}")
+                # Play each normally (maintains existing behavior)
+                for g in group:
+                    await self._play_queued_sound(g, client_instance)
+                    # if the user requested 'instant' spacing, add a small delay between starts
+                    play_mode = g.get("play_mode", "full")
+                    if play_mode == "instant":
+                        interval = g.get("rapid_interval") or client_instance.repeat_config.get("rapid_interval", 0.05)
+                        # default to 0.1s for instant spacing if not configured
+                        interval = interval if interval is not None else 0.1
+                        await asyncio.sleep(interval)
+
+            i = j
+    async def _play_queued_sound(self, sound_info: Dict[str, Any], client_instance):
+        """Actually play a queued sound.
+
+        Supports two playback modes:
+          - 'full'   : wait for the channel to finish before returning (sequential play)
+          - 'instant': fire-and-forget with short spacing (overlap allowed)
+        """
+        try:
+            play_mode = sound_info.get("play_mode", "full")
+            count = int(sound_info.get("count", 1))
+
+            for idx in range(max(1, count)):
+                # request channel back so we can optionally wait for completion
+                result = client_instance._play_sound_immediate(
+                    sound_info["sound_id"],
+                    sound_info.get("title"),
+                    sound_info.get("mp3_url"),
+                    sound_info.get("volume", 0.7),
+                    return_channel=True
+                )
+                if not result.get("success"):
+                    logger.error(f"Failed to play queued sound: {result.get('message', 'Unknown error')}")
+                    return
+
+                channel = result.get("_channel")
+                logger.info(f"Played queued sound: {sound_info.get('title', 'Unknown')} (mode={play_mode}) [{idx+1}/{count}]")
+
+                if play_mode == "full" and channel is not None:
+                    # Wait until the sound finishes playing
+                    try:
+                        while channel.get_busy():
+                            await asyncio.sleep(0.1)
+                    except Exception as e:
+                        logger.debug(f"Error while waiting for channel to finish: {e}")
+                else:
+                    # instant: short delay between immediate starts
+                    await asyncio.sleep(sound_info.get("rapid_interval") or client_instance.repeat_config.get("rapid_interval", 0.05))
+
         except Exception as e:
             logger.error(f"Error playing queued sound: {e}")
 
@@ -70,7 +148,7 @@ class MyInstantsClient:
     """Client for interacting with MyInstants API and managing sound effects."""
     
     def __init__(self, cache_dir: str = "sfx/myinstants"):
-        self.base_url = "https://myinstants-api.vercel.app"
+        self.base_url = "https://myinstants.barricade.dev"
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
@@ -89,8 +167,17 @@ class MyInstantsClient:
         
         self.playing_sounds = {}
         self.sound_cache = {}
-        
-        
+
+        # Repeat/burst configuration
+        self.repeat_config = {
+            "enabled": True,
+            "threshold": 5,           # number of repeats to trigger burst mode
+            "rapid_interval": 0.05,   # seconds between rapid plays (very short)
+            "detection_period": 5.0   # seconds window to count repeats
+        }
+        self._play_history: Dict[str, deque] = {}
+        self._repeat_lock = threading.Lock()
+
         self._queue_task = None
         self._start_queue_processor()
     
@@ -152,8 +239,48 @@ class MyInstantsClient:
         
         return f"{safe_title}_{hash_str}.mp3"
     
+    def _safe_title(self, title: str) -> str:
+        """Return a filesystem-safe shortened title used for cache lookup."""
+        if not title:
+            return ""
+        safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        safe_title = safe_title.replace(' ', '_')[:50]
+        return safe_title
+
+    def _find_cached_by_title(self, title: str):
+        """If a cached file already exists for the given title, return its Path.
+
+        This lets multiple identical-sounding uploads (same title) reuse a single
+        cached file instead of re-downloading for each sound id.
+        """
+        safe = self._safe_title(title)
+        if not safe:
+            return None
+
+        # Prefer files using the standard generated filename pattern
+        for p in self.cache_dir.glob(f"{safe}_*.mp3"):
+            return p
+
+        # Allow exact filename without hash
+        candidate = self.cache_dir / f"{safe}.mp3"
+        if candidate.exists():
+            return candidate
+
+        # Fallback: any file beginning with the safe title
+        matches = list(self.cache_dir.glob(f"{safe}*.mp3"))
+        return matches[0] if matches else None
+
     def _get_cache_path(self, sound_id: str, title: str) -> Path:
-        """Get the full cache path for a sound file."""
+        """Get the full cache path for a sound file.
+
+        If a file already exists in cache with the same title, return that path
+        so we reuse cached sounds by name rather than re-downloading.
+        """
+        if title:
+            existing = self._find_cached_by_title(title)
+            if existing:
+                return existing
+
         filename = self._generate_cache_filename(sound_id, title)
         return self.cache_dir / filename
     
@@ -182,14 +309,33 @@ class MyInstantsClient:
         """Search for sounds using the MyInstants API."""
         try:
             url = f"{self.base_url}/search"
-            params = {"q": quote(query)}
+            params = {"q": query}
             
-            logger.info(f"Searching for sounds with query: {query}")
+            logger.info(f"Searching for sounds with query: {query} (url={url})")
             response = requests.get(url, params=params, timeout=15)
             response.raise_for_status()
             
-            data = response.json()
-            
+            data = self._safe_parse_json(response)
+            if data is None:
+                return {
+                    "success": False,
+                    "message": f"Failed to parse JSON response from search (status: {response.status_code}). Response truncated: {response.text[:400]!r}",
+                    "sounds": [],
+                    "count": 0
+                }
+            # If the API returns an error object (status/message), surface it instead of silently returning no results
+            if isinstance(data, dict) and ("status" in data or "message" in data):
+                status = str(data.get("status", "")).strip()
+                msg = data.get("message") or data.get("error") or "API error"
+                if status and status != "200":
+                    logger.warning(f"MyInstants API error on search: status={status} message={msg}")
+                    return {
+                        "success": False,
+                        "message": f"API error: {msg} (status: {status})",
+                        "sounds": [],
+                        "count": 0,
+                        "raw_api_response": data
+                    }
             
             if isinstance(data, dict) and "data" in data:
                 sounds = data["data"]
@@ -238,44 +384,76 @@ class MyInstantsClient:
                 "count": 0
             }
     
-    def get_sound_details(self, sound_id: str) -> Dict[str, Any]:
-        """Get detailed information about a specific sound."""
+    def _normalize_sound_id(self, sound_id: str) -> str:
+        """Normalize different forms of sound identifiers into the slug used by the API.
+
+        Accepts full URLs, paths like '/en/instant/slug', numeric IDs, or slug forms and
+        returns a best-effort slug to use with the `/detail?id=` API.
+        """
+        if not sound_id:
+            return sound_id
+
+        # If it's a URL, extract the last path segment
         try:
+            parsed = urlparse(sound_id)
+            if parsed.scheme in ("http", "https") and parsed.path:
+                path = parsed.path.rstrip('/')
+                # If the path contains '/instant/', use the following segment
+                if '/instant/' in path:
+                    return path.split('/instant/')[-1].lstrip('/')
+                # Otherwise, use the final segment
+                return path.split('/')[-1].lstrip('/')
+        except Exception:
+            pass
+
+        # If it looks like '/en/instant/slug' or '/instant/slug', strip prefixes and slashes
+        if sound_id.startswith('/'):
+            parts = sound_id.strip('/').split('/')
+            if 'instant' in parts:
+                idx = parts.index('instant')
+                if idx + 1 < len(parts):
+                    return parts[idx + 1]
+            return parts[-1]
+
+        return sound_id
+
+    def get_sound_details(self, sound_id: str) -> Dict[str, Any]:
+        """Get detailed information about a specific sound.
+
+        Accepts various ID formats and will attempt to normalize and retry.
+        """
+        try:
+            normalized_id = self._normalize_sound_id(sound_id)
+
             url = f"{self.base_url}/detail"
-            params = {"id": sound_id}
+            params = {"id": normalized_id}
             
-            logger.info(f"Getting details for sound ID: {sound_id}")
+            logger.info(f"Getting details for sound ID: {sound_id} (normalized: {normalized_id})")
             response = requests.get(url, params=params, timeout=15)
             response.raise_for_status()
             
-            
-            response_text = response.text
-            
-            
-            try:
-                
-                json_start = response_text.find('{')
-                if json_start != -1:
-                    json_text = response_text[json_start:]
-                    data = json.loads(json_text)
-                else:
-                    data = response.json()
-            except (json.JSONDecodeError, ValueError) as e:
-                logger.error(f"Failed to parse JSON response: {e}")
-                logger.debug(f"Response text: {response_text}")
+            data = self._safe_parse_json(response)
+            if data is None:
                 return {
                     "success": False,
-                    "message": f"Failed to parse API response for sound ID '{sound_id}'"
+                    "message": f"Failed to parse API response for sound ID '{normalized_id}'"
                 }
-            
-            
+
             if isinstance(data, dict):
+                # Surface API-level errors
+                if ("status" in data or "message" in data) and str(data.get("status", "")).strip() != "200":
+                    return {
+                        "success": False,
+                        "message": data.get("message", "API error"),
+                        "raw_api_response": data
+                    }
+
                 if "data" in data and isinstance(data["data"], dict) and "id" in data["data"]:
                     return {
                         "success": True,
                         "sound": data["data"]
                     }
-                elif "id" in data:  
+                elif "id" in data:
                     return {
                         "success": True,
                         "sound": data
@@ -298,6 +476,27 @@ class MyInstantsClient:
                 "message": f"Failed to get sound details: {str(e)}"
             }
     
+    def _safe_parse_json(self, response) -> Optional[Any]:
+        """Try to parse JSON robustly, including responses that contain extra HTML or text.
+
+        Returns parsed JSON (dict/list) on success or None on failure.
+        """
+        try:
+            return response.json()
+        except (ValueError, json.JSONDecodeError) as e:
+            text = response.text or ''
+            # Try to find the start of the JSON payload inside HTML or other wrappers
+            json_start = text.find('[')
+            if json_start == -1:
+                json_start = text.find('{')
+            if json_start != -1:
+                try:
+                    return json.loads(text[json_start:])
+                except Exception as e2:
+                    logger.debug(f"Failed fallback JSON parse: {e2}; response text truncated: {text[:400]!r}")
+            logger.error(f"Failed to parse JSON from {getattr(response, 'url', 'unknown')} (status {getattr(response,'status_code', 'unknown')}). Response truncated: {text[:400]!r}")
+            return None
+    
     def get_trending_sounds(self, region: str = "us", limit: int = 10) -> Dict[str, Any]:
         """Get trending sounds for a specific region."""
         try:
@@ -308,8 +507,27 @@ class MyInstantsClient:
             response = requests.get(url, params=params, timeout=15)
             response.raise_for_status()
             
-            data = response.json()
-            
+            data = self._safe_parse_json(response)
+            if data is None:
+                return {
+                    "success": False,
+                    "message": f"Failed to parse JSON response from trending (status: {response.status_code}). Response truncated: {response.text[:400]!r}",
+                    "sounds": [],
+                    "count": 0
+                }
+            # Surface API-level errors from the backend service
+            if isinstance(data, dict) and ("status" in data or "message" in data):
+                status = str(data.get("status", "")).strip()
+                msg = data.get("message") or data.get("error") or "API error"
+                if status and status != "200":
+                    logger.warning(f"MyInstants API error on trending: status={status} message={msg}")
+                    return {
+                        "success": False,
+                        "message": f"API error: {msg} (status: {status})",
+                        "sounds": [],
+                        "count": 0,
+                        "raw_api_response": data
+                    }
             
             if isinstance(data, dict) and "data" in data:
                 sounds = data["data"]
@@ -367,8 +585,27 @@ class MyInstantsClient:
             response = requests.get(url, timeout=15)
             response.raise_for_status()
             
-            data = response.json()
-            
+            data = self._safe_parse_json(response)
+            if data is None:
+                return {
+                    "success": False,
+                    "message": f"Failed to parse JSON response from recent (status: {response.status_code}). Response truncated: {response.text[:400]!r}",
+                    "sounds": [],
+                    "count": 0
+                }
+            # Surface API-level errors from the backend service
+            if isinstance(data, dict) and ("status" in data or "message" in data):
+                status = str(data.get("status", "")).strip()
+                msg = data.get("message") or data.get("error") or "API error"
+                if status and status != "200":
+                    logger.warning(f"MyInstants API error on recent: status={status} message={msg}")
+                    return {
+                        "success": False,
+                        "message": f"API error: {msg} (status: {status})",
+                        "sounds": [],
+                        "count": 0,
+                        "raw_api_response": data
+                    }
             
             if isinstance(data, dict) and "data" in data:
                 sounds = data["data"]
@@ -415,7 +652,7 @@ class MyInstantsClient:
                 "count": 0
             }
     
-    def play_sound(self, sound_id: str, title: str = None, mp3_url: str = None, volume: float = 0.7, immediate: bool = False) -> Dict[str, Any]:
+    def play_sound(self, sound_id: str, title: str = None, mp3_url: str = None, volume: float = 0.7, immediate: bool = False, play_mode: str = "full", count: int = 1) -> Dict[str, Any]:
         """Play a sound effect. By default, queues for playback after Gabriel's TTS ends.
         
         Args:
@@ -434,13 +671,46 @@ class MyInstantsClient:
         try:
             
             if not mp3_url or not title:
+                # First attempt: resolve via the detail endpoint using normalized id
                 sound_details = self.get_sound_details(sound_id)
+
+                # If detail lookup failed, try sensible fallbacks (search by title, then by id string)
                 if not sound_details["success"]:
-                    return sound_details
-                
-                sound_data = sound_details["sound"]
-                mp3_url = sound_data.get("mp3")
-                title = sound_data.get("title", sound_id)
+                    logger.info(f"Detail lookup failed for '{sound_id}': {sound_details.get('message')}; trying fallbacks")
+
+                    # If a title was provided, prefer searching by it
+                    if title:
+                        fallback = self.search_sounds(title, limit=5)
+                        if fallback.get("success") and fallback.get("count", 0) > 0:
+                            found = fallback["sounds"][0]
+                            logger.info(f"Found fallback sound by title search: {found.get('id')}")
+                            sound_id = found.get("id")
+                            mp3_url = found.get("mp3")
+                            title = found.get("title", title)
+                            sound_details = {"success": True, "sound": found}
+
+                    # If still no result, try searching by the provided sound_id text (useful when numeric ids were given)
+                    if not sound_details["success"]:
+                        fallback2 = self.search_sounds(str(sound_id), limit=5)
+                        if fallback2.get("success") and fallback2.get("count", 0) > 0:
+                            found = fallback2["sounds"][0]
+                            logger.info(f"Found fallback sound by id-string search: {found.get('id')}")
+                            sound_id = found.get("id")
+                            mp3_url = found.get("mp3")
+                            title = found.get("title", title)
+                            sound_details = {"success": True, "sound": found}
+
+                    # If still not found, return the original failure (with helpful message)
+                    if not sound_details["success"]:
+                        return {
+                            "success": False,
+                            "message": f"Sound not found. Tried detail lookup for '{sound_id}' and fallback searches.",
+                            "original_error": sound_details.get("message")
+                        }
+                else:
+                    sound_data = sound_details["sound"]
+                    mp3_url = mp3_url or sound_data.get("mp3")
+                    title = title or sound_data.get("title", sound_id)
             
             if not mp3_url:
                 return {
@@ -449,15 +719,41 @@ class MyInstantsClient:
                 }
             
             if immediate:
-                
-                return self._play_sound_immediate(sound_id, title, mp3_url, volume)
+                # Play synchronously 'count' times. For 'full' mode wait for each to finish;
+                # for 'instant' mode start each with a short spacing.
+                last_res = None
+                interval = self.repeat_config.get("rapid_interval", 0.05) if play_mode == "instant" else 0.05
+                for i in range(max(1, int(count))):
+                    res = self._play_sound_immediate(sound_id, title, mp3_url, volume, return_channel=True)
+                    last_res = res
+                    if not res.get("success"):
+                        # sanitize channel if present before returning
+                        if isinstance(res, dict):
+                            res.pop("_channel", None)
+                        return res
+                    ch = res.get("_channel")
+                    if play_mode == "full" and ch is not None:
+                        # Wait synchronously until channel finishes
+                        try:
+                            while getattr(ch, "get_busy", lambda: False)():
+                                time.sleep(0.05)
+                        except Exception:
+                            pass
+                    else:
+                        # instant spacing between starts
+                        time.sleep(interval)
+                if isinstance(last_res, dict):
+                    last_res.pop("_channel", None)
+                return last_res or {"success": False, "message": "Failed to play sound"}
             else:
                 
                 sound_info = {
                     "sound_id": sound_id,
                     "title": title,
                     "mp3_url": mp3_url,
-                    "volume": volume
+                    "volume": volume,
+                    "play_mode": play_mode,
+                    "count": int(count)
                 }
                 
                 if self.sound_queue.is_ai_speaking:
@@ -468,11 +764,33 @@ class MyInstantsClient:
                         "message": f"Queued sound '{title}' for playback after Gabriel's TTS ends",
                         "sound_id": sound_id,
                         "title": title,
-                        "queued": True
+                        "queued": True,
+                        "count": int(count)
                     }
                 else:
                     
-                    return self._play_sound_immediate(sound_id, title, mp3_url, volume)
+                    # Not speaking, play immediately 'count' times (honor play_mode)
+                    last_res = None
+                    interval = self.repeat_config.get("rapid_interval", 0.05) if play_mode == "instant" else 0.05
+                    for i in range(max(1, int(count))):
+                        res = self._play_sound_immediate(sound_id, title, mp3_url, volume, return_channel=True)
+                        last_res = res
+                        if not res.get("success"):
+                            if isinstance(res, dict):
+                                res.pop("_channel", None)
+                            return res
+                        ch = res.get("_channel")
+                        if play_mode == "full" and ch is not None:
+                            try:
+                                while getattr(ch, "get_busy", lambda: False)():
+                                    time.sleep(0.05)
+                            except Exception:
+                                pass
+                        else:
+                            time.sleep(interval)
+                    if isinstance(last_res, dict):
+                        last_res.pop("_channel", None)
+                    return last_res or {"success": False, "message": "Failed to play sound"}
                 
         except Exception as e:
             logger.error(f"Error in play_sound: {e}")
@@ -481,11 +799,22 @@ class MyInstantsClient:
                 "message": f"Failed to play sound: {str(e)}"
             }
     
-    def _play_sound_immediate(self, sound_id: str, title: str = None, mp3_url: str = None, volume: float = 0.7) -> Dict[str, Any]:
+    def _play_sound_immediate(self, sound_id: str, title: str = None, mp3_url: str = None, volume: float = 0.7, return_channel: bool = False) -> Dict[str, Any]:
         """Internal method to play a sound immediately without queuing."""
         try:
             
-            cache_path = self._get_cache_path(sound_id, title)
+            normalized_id = self._normalize_sound_id(sound_id)
+            # If caller didn't provide a title but we have an mp3 URL, derive a simple title from the URL
+            if not title and mp3_url:
+                try:
+                    parsed_mp3 = urlparse(mp3_url)
+                    candidate = os.path.splitext(os.path.basename(parsed_mp3.path))[0]
+                    if candidate:
+                        title = candidate
+                except Exception:
+                    pass
+
+            cache_path = self._get_cache_path(normalized_id, title)
             
             if not cache_path.exists():
                 
@@ -494,33 +823,56 @@ class MyInstantsClient:
                         "success": False,
                         "message": f"Failed to download sound: {title}"
                     }
+                # Record mapping for quick future lookups
+                try:
+                    self.sound_cache[normalized_id] = cache_path
+                except Exception:
+                    pass
             else:
                 logger.info(f"Using cached sound: {cache_path}")
+                try:
+                    self.sound_cache[normalized_id] = cache_path
+                except Exception:
+                    pass
             
             
             try:
                 
-                if sound_id in self.playing_sounds:
-                    self.playing_sounds[sound_id].stop()
-                
-                
+                # Clean up finished channels for this sound id
+                try:
+                    channels = self.playing_sounds.get(normalized_id, [])
+                    active_channels = [ch for ch in channels if getattr(ch, 'get_busy', lambda: False)()]
+                    self.playing_sounds[normalized_id] = active_channels
+                except Exception:
+                    pass
+
                 sound = pygame.mixer.Sound(str(cache_path))
                 sound.set_volume(volume)
-                
-                
+
                 channel = sound.play()
-                self.playing_sounds[sound_id] = sound
-                
+                # Store channel so we can optionally wait on it; allow multiple channels per sound id
+                try:
+                    self.playing_sounds.setdefault(normalized_id, []).append(channel)
+                except Exception:
+                    self.playing_sounds[normalized_id] = [channel]
+
                 logger.info(f"Playing sound: {title}")
-                
-                return {
+
+                response = {
                     "success": True,
                     "message": f"Playing sound: {title}",
-                    "sound_id": sound_id,
+                    "sound_id": normalized_id,
                     "title": title,
                     "cached": True,
                     "cache_path": str(cache_path)
                 }
+                # Optionally include channel for internal awaiting callers
+                if return_channel:
+                    try:
+                        response["_channel"] = channel
+                    except Exception:
+                        pass
+                return response
                 
             except Exception as e:
                 logger.error(f"Error playing sound: {e}")
@@ -540,12 +892,33 @@ class MyInstantsClient:
         """Stop a specific sound or all sounds."""
         try:
             if sound_id:
-                if sound_id in self.playing_sounds:
-                    self.playing_sounds[sound_id].stop()
-                    del self.playing_sounds[sound_id]
+                normalized_id = self._normalize_sound_id(sound_id)
+                if normalized_id in self.playing_sounds:
+                    try:
+                        # If we stored channels list, stop each; otherwise attempt stop
+                        channels = self.playing_sounds.get(normalized_id)
+                        if isinstance(channels, list):
+                            for ch in channels:
+                                try:
+                                    ch.stop()
+                                except Exception:
+                                    pass
+                        else:
+                            try:
+                                channels.stop()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                    try:
+                        del self.playing_sounds[normalized_id]
+                    except Exception:
+                        self.playing_sounds.pop(normalized_id, None)
+
                     return {
                         "success": True,
-                        "message": f"Stopped sound: {sound_id}"
+                        "message": f"Stopped sound: {normalized_id}"
                     }
                 else:
                     return {
@@ -670,11 +1043,57 @@ class MyInstantsClient:
         try:
             cleared_count = len(self.sound_queue.queued_sounds)
             self.sound_queue.queued_sounds.clear()
-            
+
             return {
                 "success": True,
                 "message": f"Cleared {cleared_count} queued sounds",
                 "cleared_count": cleared_count
+            }
+        except Exception as e:
+            logger.error(f"Error clearing sound queue: {e}")
+            return {
+                "success": False,
+                "message": f"Failed to clear sound queue: {str(e)}"
+            }
+
+    def set_repeat_config(self, enabled: bool = True, threshold: int = 5, rapid_interval: float = 0.05, detection_period: float = 5.0) -> Dict[str, Any]:
+        """Configure burst/rapid-play behavior when same sound is queued repeatedly.
+
+        Args:
+            enabled: Enable/disable the feature
+            threshold: Number of repeated queued plays to trigger burst mode
+            rapid_interval: Seconds between rapid plays when bursting
+            detection_period: Time window (seconds) used when heuristics elsewhere track repeats (not used in queue grouping)
+        """
+        try:
+            self.repeat_config["enabled"] = bool(enabled)
+            self.repeat_config["threshold"] = int(threshold)
+            self.repeat_config["rapid_interval"] = float(rapid_interval)
+            self.repeat_config["detection_period"] = float(detection_period)
+
+            return {
+                "success": True,
+                "message": "Repeat configuration updated",
+                "repeat_config": self.repeat_config
+            }
+        except Exception as e:
+            logger.error(f"Error setting repeat config: {e}")
+            return {
+                "success": False,
+                "message": f"Failed to set repeat config: {str(e)}"
+            }
+
+    def get_repeat_config(self) -> Dict[str, Any]:
+        try:
+            return {
+                "success": True,
+                "repeat_config": self.repeat_config
+            }
+        except Exception as e:
+            logger.error(f"Error getting repeat config: {e}")
+            return {
+                "success": False,
+                "message": f"Failed to get repeat config: {str(e)}"
             }
         except Exception as e:
             logger.error(f"Error clearing sound queue: {e}")
@@ -755,6 +1174,18 @@ MYINSTANTS_FUNCTION_DECLARATIONS = [
                     "type": "boolean",
                     "description": "If true, play immediately. If false (default), queue for playback after Gabriel's TTS ends",
                     "default": False
+                },
+                "play_mode": {
+                    "type": "string",
+                    "description": "Playback behavior when queued: 'full' to wait for full length sequential playback, 'instant' to play with short spacing allowing overlap",
+                    "enum": ["full", "instant"],
+                    "default": "full"
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of times to play the sound (default: 1)",
+                    "default": 1,
+                    "minimum": 1
                 }
             },
             "required": ["sound_id"]
@@ -837,6 +1268,27 @@ MYINSTANTS_FUNCTION_DECLARATIONS = [
         }
     },
     {
+        "name": "configure_myinstants_repeat",
+        "description": "Configure burst/rapid-play behavior: when the same sound is requested repeated times, play them quickly.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "description": "Enable or disable rapid repeat detection", "default": True},
+                "threshold": {"type": "integer", "description": "Number of repeats to trigger burst mode (default: 5)", "default": 5},
+                "rapid_interval": {"type": "number", "description": "Seconds between rapid plays in burst mode (default: 0.05)", "default": 0.05},
+                "detection_period": {"type": "number", "description": "Detection window in seconds (informational)", "default": 5.0}
+            }
+        }
+    },
+    {
+        "name": "get_myinstants_repeat_config",
+        "description": "Get the current rapid/burst repeat configuration.",
+        "parameters": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
         "name": "get_myinstants_cache_info",
         "description": "Get information about the MyInstants sound cache (cached files, total size, etc.).",
         "parameters": {
@@ -890,6 +1342,35 @@ MYINSTANTS_FUNCTION_DECLARATIONS = [
     }
 ]
 
+def _sanitize_for_response(obj):
+    """Sanitize a result dict for JSON/function response by removing internal keys and non-serializable objects.
+
+    - Removes keys that start with '_' (internal)
+    - Converts non-serializable values to their repr()
+    """
+    def _sanitize(value):
+        if isinstance(value, dict):
+            out = {}
+            for k, v in value.items():
+                if str(k).startswith('_'):
+                    continue
+                out[k] = _sanitize(v)
+            return out
+        elif isinstance(value, list):
+            return [_sanitize(v) for v in value]
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        else:
+            # Attempt JSON serialization, fallback to repr
+            try:
+                json.dumps(value)
+                return value
+            except Exception:
+                return repr(value)
+
+    return _sanitize(obj)
+
+
 async def handle_myinstants_function_call(function_call) -> types.FunctionResponse:
     """Handle MyInstants-related function calls."""
     function_name = function_call.name
@@ -908,7 +1389,9 @@ async def handle_myinstants_function_call(function_call) -> types.FunctionRespon
                 title=args.get("title"),
                 mp3_url=args.get("mp3_url"),
                 volume=args.get("volume", 0.7),
-                immediate=args.get("immediate", False)
+                immediate=args.get("immediate", False),
+                play_mode=args.get("play_mode", "full"),
+                count=args.get("count", 1)
             )
         
         elif function_name == "get_myinstants_sound_details":
@@ -950,17 +1433,29 @@ async def handle_myinstants_function_call(function_call) -> types.FunctionRespon
         elif function_name == "set_ai_tts_state":
             result = myinstants_client.set_ai_tts_state(args["speaking"])
         
+        elif function_name == "configure_myinstants_repeat":
+            result = myinstants_client.set_repeat_config(
+                enabled=args.get("enabled", True),
+                threshold=args.get("threshold", 5),
+                rapid_interval=args.get("rapid_interval", 0.05),
+                detection_period=args.get("detection_period", 5.0)
+            )
+        
+        elif function_name == "get_myinstants_repeat_config":
+            result = myinstants_client.get_repeat_config()
+        
         else:
             result = {
                 "success": False,
                 "message": f"Unknown MyInstants function: {function_name}"
             }
         
+        sanitized = _sanitize_for_response(result) if isinstance(result, dict) else result
         return types.FunctionResponse(
             id=function_call.id,
             name=function_name,
             response={
-                **result,
+                **(sanitized if isinstance(sanitized, dict) else {"result": sanitized}),
                 "scheduling": "SILENT"
             }
         )

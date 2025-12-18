@@ -13,3 +13,4 @@ api\__pycache__
 *.sqlite-shm
 *.sqlite-wal
 *.log
+/myinstants

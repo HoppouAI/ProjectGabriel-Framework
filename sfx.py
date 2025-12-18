@@ -20,6 +20,15 @@ except ImportError:
     PYGAME_AVAILABLE = False
 
 
+# Optional MyInstants integration (fall back if a file isn't available locally)
+try:
+    from myinstants import myinstants_client
+    MYINSTANTS_AVAILABLE = True
+except Exception as e:
+    myinstants_client = None
+    MYINSTANTS_AVAILABLE = False
+    # Do not spam logs at import time; leave info for callers
+
 logger = logging.getLogger(__name__)
 
 class SFXManager:
@@ -228,17 +237,52 @@ class SFXManager:
         
         return sorted(list(categories))
     
-    def play_audio_file(self, file_identifier: str) -> Dict[str, Any]:
-        """Play an audio file by name, relative path, or exact match."""
+    def play_audio_file(self, file_identifier: str, play_mode: str = None, count: int = 1) -> Dict[str, Any]:
+        """Play an audio file by name, relative path, or exact match.
+
+        play_mode: Optional; when falling back to MyInstants, pass-through mode 'full' or 'instant'.
+        count: how many times to play the file (default 1)
+        """
         if not self.audio_system:
             return {
                 "success": False,
                 "message": "No audio playback system available"
             }
-        
-        
+
         file_info = self._find_audio_file(file_identifier)
         if not file_info:
+            # Attempt fallback to MyInstants if local file not found
+            try:
+                if MYINSTANTS_AVAILABLE and myinstants_client is not None:
+                    logger.info(f"Local audio '{file_identifier}' not found, trying MyInstants search")
+                    search_res = myinstants_client.search_sounds(file_identifier, limit=5)
+                    if search_res.get("success") and search_res.get("count", 0) > 0:
+                        top = search_res["sounds"][0]
+                        logger.info(f"Playing MyInstants sound as fallback: {top.get('title')} ({top.get('id')})")
+                        play_res = myinstants_client.play_sound(
+                            sound_id=top.get("id"),
+                            title=top.get("title"),
+                            mp3_url=top.get("mp3"),
+                            volume=self.volume,
+                            immediate=False,
+                            play_mode=play_mode or "full",
+                            count=int(count)
+                        )
+                        # Normalize and sanitize response for sfx callers
+                        try:
+                            sanitized_play_res = _sanitize_for_response(play_res) if isinstance(play_res, dict) else play_res
+                        except Exception:
+                            sanitized_play_res = {"success": bool(getattr(play_res, 'get', lambda k, d=None: None)('success', False)), "message": str(play_res)}
+
+                        return {
+                            "success": bool(sanitized_play_res.get("success") if isinstance(sanitized_play_res, dict) else False),
+                            "message": sanitized_play_res.get("message") if isinstance(sanitized_play_res, dict) else str(sanitized_play_res),
+                            "myinstants": True,
+                            "result": sanitized_play_res
+                        }
+            except Exception as e:
+                logger.debug(f"MyInstants fallback error: {e}")
+
             return {
                 "success": False,
                 "message": f"Audio file '{file_identifier}' not found"
@@ -251,7 +295,25 @@ class SFXManager:
         
         try:
             if self.audio_system == "pygame":
-                return self._play_with_pygame(file_path, file_info)
+                # Play 'count' times honoring play_mode
+                last_res = None
+                interval = 0.1 if (play_mode == "instant") else 0.05
+                for i in range(max(1, int(count))):
+                    res = self._play_with_pygame(file_path, file_info)
+                    last_res = res
+                    if not res.get("success"):
+                        return res
+                    if play_mode == "full":
+                        # Wait until music finishes
+                        try:
+                            while pygame.mixer.music.get_busy():
+                                time.sleep(0.05)
+                        except Exception:
+                            pass
+                    else:
+                        # instant: short gap between starts (note: with pygame.music this restarts stream)
+                        time.sleep(interval)
+                return last_res
             else:
                 return {
                     "success": False,
@@ -421,6 +483,18 @@ SFX_FUNCTION_DECLARATIONS = [
                 "file_identifier": {
                     "type": "string",
                     "description": "Name, relative path, or search term for the audio file (e.g., 'explosion', 'music/song.mp3', 'dramatic')"
+                },
+                "play_mode": {
+                    "type": "string",
+                    "description": "Playback behavior when queued: 'full' to wait for each sound to finish, 'instant' to play with short spacing allowing overlap",
+                    "enum": ["full", "instant"],
+                    "default": "full"
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of times to play the sound (default: 1)",
+                    "default": 1,
+                    "minimum": 1
                 }
             },
             "required": ["file_identifier"]
@@ -513,6 +587,28 @@ SFX_FUNCTION_DECLARATIONS = [
     }
 ]
 
+def _sanitize_for_response(obj):
+    def _sanitize(value):
+        if isinstance(value, dict):
+            out = {}
+            for k, v in value.items():
+                if str(k).startswith('_'):
+                    continue
+                out[k] = _sanitize(v)
+            return out
+        elif isinstance(value, list):
+            return [_sanitize(v) for v in value]
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        else:
+            try:
+                json.dumps(value)
+                return value
+            except Exception:
+                return repr(value)
+    return _sanitize(obj)
+
+
 async def handle_sfx_function_calls(function_call) -> types.FunctionResponse:
     """Handle SFX-related function calls."""
     function_name = function_call.name
@@ -520,7 +616,9 @@ async def handle_sfx_function_calls(function_call) -> types.FunctionResponse:
     
     try:
         if function_name == "play_sfx":
-            result = sfx_manager.play_audio_file(args["file_identifier"])
+            play_mode = args.get("play_mode", None)
+            count = args.get("count", 1)
+            result = sfx_manager.play_audio_file(args["file_identifier"], play_mode=play_mode, count=count)
         
         elif function_name == "stop_sfx":
             result = sfx_manager.stop_audio()
@@ -579,10 +677,11 @@ async def handle_sfx_function_calls(function_call) -> types.FunctionResponse:
                 "message": f"Unknown SFX function: {function_name}"
             }
         
+        sanitized = _sanitize_for_response(result) if isinstance(result, dict) else result
         return types.FunctionResponse(
             id=function_call.id,
             name=function_name,
-            response=result
+            response=(sanitized if isinstance(sanitized, dict) else {"result": sanitized})
         )
         
     except Exception as e:
