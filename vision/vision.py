@@ -179,11 +179,6 @@ def _init_model():
                 print(f"Loading YOLO weights: {w}")
                 m = YOLO(w)
                 m = m.to(device)
-                if device == "cuda" and hasattr(m, "model"):
-                    try:
-                        m.model.half()
-                    except Exception:
-                        pass
                 model = m
                 print(f"Loaded YOLO model: {w}")
                 break
@@ -248,9 +243,18 @@ def detect_players(frame):
     # Run model inference with verbose logging disabled to prevent console spam
     try:
         results = model(resized_frame, verbose=False)
-    except TypeError:
-        # Older ultralytics may not accept verbose kwarg
-        results = model(resized_frame)
+    except Exception as e:
+        if isinstance(e, TypeError):
+            results = model(resized_frame)
+        elif isinstance(e, RuntimeError) and ("expected mat1 and mat2 to have the same dtype" in str(e) or "c10::Half" in str(e)):
+            try:
+                if hasattr(model, "model"):
+                    model.model.float()
+            except Exception:
+                pass
+            results = model(resized_frame)
+        else:
+            raise
     players = []
     
     scale_x = frame.shape[1] / 640
