@@ -127,11 +127,36 @@ _sprinting = False
 _window_initialized = False
 _preview_failed_once = False
 
+def _supports_torchvision_cuda_nms():
+    if torch is None:
+        return False
+    try:
+        import torchvision
+        device_test = torch.device("cuda")
+        boxes = torch.empty((0, 4), device=device_test)
+        scores = torch.empty((0,), device=device_test)
+        torchvision.ops.nms(boxes, scores, 0.5)
+        return True
+    except Exception as e:
+        try:
+            print(f"torchvision NMS CUDA support test failed: {e}")
+        except Exception:
+            pass
+        return False
+
+
 def _select_device():
     global device
     prefer = str(config.get("detection_device", "cuda")).lower()
     if torch is not None and prefer == "cuda" and torch.cuda.is_available():
-        device = "cuda"
+        if _supports_torchvision_cuda_nms():
+            device = "cuda"
+        else:
+            device = "cpu"
+            try:
+                print("torchvision NMS is not available for CUDA; falling back to CPU for detection.")
+            except Exception:
+                pass
     else:
         device = "cpu"
 
