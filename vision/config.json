@@ -5,7 +5,7 @@
   "deadzone": 0.08,
   "osc_host": "127.0.0.1",
   "osc_port": 9000,
-  "model_path": "yolo11m.pt",
+  "model_path": "yolo11n.pt",
   "show_window": true,
   "window_title": "VRChat",
   "detection_device": "cuda",
