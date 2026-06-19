@@ -1,3 +1,33 @@
+<div align="center">
+
+# Project Gabriel Framework <sub>(archived)</sub>
+
+[![Use the new version: Project Gabriel Remastered](https://img.shields.io/badge/use%20the%20new%20version-Project%20Gabriel%20Remastered-6366f1?style=for-the-badge&logo=github&logoColor=white)](https://github.com/HoppouAI/ProjectGabriel-Remastered)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ZNWTYTk4Vq)
+[![Website](https://img.shields.io/badge/Website-hoppou.ai-ff66c4?style=for-the-badge)](https://hoppou.ai/)
+[![Status](https://img.shields.io/badge/status-archived-8b949e?style=for-the-badge)](#)
+
+</div>
+
+> [!IMPORTANT]
+> **This is the original Project Gabriel Framework, and it is no longer the version we recommend.**
+>
+> A full rewrite, **[Project Gabriel Remastered](https://github.com/HoppouAI/ProjectGabriel-Remastered)**, is out now and it is better in just about every way: much easier to set up, far more stable, and loaded with features this version never had. If you are starting fresh, grab Remastered instead. This original is archived and only gets limited support from here on.
+
+### Why Remastered?
+
+- **Far easier setup.** Download a release, run `setup.bat`, then `run.bat`. It installs Python, the dependencies, and GPU support for you, no manual environment wrangling.
+- **A lot more features.** Real time Gemini Live voice, persistent memory with semantic search, switchable personalities, spatial navigation, a full WebUI dashboard, a plugin system, a Discord bot, and an optional fully local backend (LM Studio plus local speech to text and TTS, so nothing leaves your PC).
+- **Stable and actively maintained.** All the development happens over there now.
+- **VRChat is optional.** Remastered also runs standalone through Discord, the WebUI, or any other interface.
+
+➡️ **[Get Project Gabriel Remastered](https://github.com/HoppouAI/ProjectGabriel-Remastered)** and hop in the **[Discord](https://discord.gg/ZNWTYTk4Vq)** if you need a hand or want updates.
+
+> [!NOTE]
+> Everything below is the original documentation for this archived framework, kept for reference. Support here is limited, so the Discord is your best bet for help (and it will point you at Remastered anyway).
+
+---
+
 # Project Gabriel Framework
 
 The Code is based on the Project Gabriel Framework by [Hoppou.AI](https://hoppou.ai/) which we use for our AI in VRChat named Gabriel, the Indian guy in the blue polo shirt.
